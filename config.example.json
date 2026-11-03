@@ -1,0 +1,11 @@
+{
+  "interval_seconds": 1800,
+  "people": [
+    {
+      "id": "person_alice",
+      "name": "Alice",
+      "candidates": ["example_alice", "example_alice2"],
+      "auto_follow": false
+    }
+  ]
+}

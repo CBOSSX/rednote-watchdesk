@@ -1,0 +1,11 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest -q test_people.PeopleTests test_config_server.ServerTests test_follow.FollowBrowserTests test_follow.FollowWorkflowTests test_cards test_mentions test_multi.MultiTests test_watch test_watchdog
