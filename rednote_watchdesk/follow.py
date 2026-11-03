@@ -21,7 +21,12 @@ def profile_url(url):
 
 
 @contextlib.contextmanager
-def follow_browser(data, headed=False):
+def follow_browser(data, headed=False, account_id=None):
+    if account_id is not None:
+        from rednote_watchdesk.accounts import browser
+        with browser(data, account_id, headed) as page:
+            yield page
+        return
     from playwright.sync_api import sync_playwright
     with (Path(data)/'follow-browser.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -38,8 +43,8 @@ def follow_browser(data, headed=False):
                 context.close()
 
 
-def login_account(data, account, seconds, gate, fresh=False):
-    with follow_browser(data, headed=True) as page:
+def login_account(data, account, seconds, gate, fresh=False, account_id=None):
+    with follow_browser(data, headed=True, account_id=account_id) as page:
         if fresh:
             page.context.clear_cookies()
         page.goto('https://www.xiaohongshu.com/explore', wait_until='domcontentloaded', timeout=45000)
@@ -47,7 +52,7 @@ def login_account(data, account, seconds, gate, fresh=False):
         button = page.get_by_role('button', name='登录', exact=True)
         if button.count() and button.first.is_visible():
             button.first.click()
-        print('BIG_ACCOUNT_LOGIN_WINDOW_READY', flush=True)
+        print('ACCOUNT_LOGIN_WINDOW_READY', flush=True)
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline and not page.is_closed():
             try:
@@ -99,13 +104,14 @@ def inspect_profile(page, account, found, target, gate):
     raise FollowProblem('follow_button_unavailable', retryable=True)
 
 
-def follow_once(data, account, found, target, allowed_targets, checkpoint, gate, *, verify_only=False):
+def follow_once(data, account, found, target, allowed_targets, checkpoint, gate, *, verify_only=False, account_id=None):
     if target not in allowed_targets or found.get('red_id', '').casefold() != target.casefold():
         raise FollowProblem('follow_not_allowlisted')
     url = profile_url(found['url'])
     if url == profile_url(account['profile_url']):
         raise FollowProblem('follow_self_refused')
-    with follow_browser(data) as page:
+    context = follow_browser(data) if account_id is None else follow_browser(data, account_id=account_id)
+    with context as page:
         try:
             response = page.goto(url, wait_until='domcontentloaded', timeout=45000)
             if response and response.status in (401, 403, 429):

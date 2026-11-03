@@ -2,10 +2,10 @@ import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
-import watch
-import follow_jobs
-from watch_config import normalize, signature
-from test_watch import WorkflowTests
+from rednote_watchdesk import watch
+from rednote_watchdesk import follow_jobs
+from rednote_watchdesk.watch_config import normalize, signature
+from tests import test_watch
 
 A,B,C='example_first','example_second','example_other'
 URL='https://www.xiaohongshu.com/user/profile/000000000000000000000001'
@@ -21,21 +21,21 @@ class PeopleTests(unittest.TestCase):
  def tearDown(self):self.p.stop();self.tmp.cleanup()
  def state(self):return watch.read_json(watch.STATE)
  def test_first_hit_skips_remaining_candidate_in_same_batch(self):
-  with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,t==A)) as query,patch.object(watch,'webhook'):
+  with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,t==A)) as query,patch.object(watch,'webhook'):
    watch.run_check(self.cfg);watch.run_check(self.cfg)
    self.assertEqual([c.args[1] for c in query.call_args_list],[A,C,C])
   self.assertEqual(self.state()['people']['alice']['matched_target'],A)
   self.assertEqual(self.state()['targets'][B]['suppressed_by'],A)
  def test_second_candidate_hit_and_restart_do_not_search_first_again(self):
   cfg=dict(self.cfg,people=[person('alice',[A,B])])
-  with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,t==B)) as query,patch.object(watch,'webhook'):
+  with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,t==B)) as query,patch.object(watch,'webhook'):
    watch.run_check(cfg);watch.run_check(cfg)
    self.assertEqual([c.args[1] for c in query.call_args_list],[A,B])
   self.assertTrue(self.state()['completed'])
  def test_follow_is_per_person_and_only_winning_candidate(self):
   cfg=dict(self.cfg,people=[person('alice',[A,B],True),person('bob',[C],False)])
   watch.write_json(self.data/'follow-account.json',{'name':'big','profile_url':URL})
-  with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,True)) as query,patch.object(follow_jobs,'follow_once',return_value={'status':'followed'}) as driver,patch.object(watch,'webhook') as notify:
+  with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,True)) as query,patch.object(follow_jobs,'follow_once',return_value={'status':'followed'}) as driver,patch.object(watch,'webhook') as notify:
    watch.run_check(cfg)
    self.assertEqual([c.args[1] for c in query.call_args_list],[A,C])
    driver.assert_called_once();self.assertEqual(driver.call_args.args[3],A)
@@ -52,7 +52,7 @@ class PeopleTests(unittest.TestCase):
   self.assertTrue(self.state()['completed'])
  def test_add_person_reopens_completed_monitor(self):
   cfg=dict(self.cfg,people=[person('alice',[A,B])])
-  with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,t==A)) as query,patch.object(watch,'webhook'):
+  with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,t==A)) as query,patch.object(watch,'webhook'):
    watch.run_check(cfg);self.assertTrue(self.state()['completed'])
    watch.run_check(self.cfg);self.assertEqual(query.call_args.args[1],C)
   self.assertFalse(self.state()['completed'])
@@ -61,7 +61,7 @@ class PeopleTests(unittest.TestCase):
    with self.subTest(people=people),self.assertRaises(ValueError):normalize({'people':people})
  def test_notification_retry_does_not_resume_losing_candidates(self):
   cfg=dict(self.cfg,people=[person('alice',[A,B])])
-  with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,True)) as query:
+  with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,True)) as query:
    with patch.object(watch,'webhook',side_effect=RuntimeError('offline')):watch.run_check(cfg)
    with patch.object(watch,'webhook'):watch.run_check(cfg)
    query.assert_called_once()
@@ -73,7 +73,7 @@ class PeopleTests(unittest.TestCase):
    changed=dict(cfg,people=[person('alice',[A,B],False),person('bob',[C])])
    watch.write_json(self.root/'config.json',changed)
    return outcome(t,True)
-  with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=search) as query,patch.object(follow_jobs,'follow_once') as driver,patch.object(watch,'webhook'):
+  with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=search) as query,patch.object(follow_jobs,'follow_once') as driver,patch.object(watch,'webhook'):
    watch.run_check(cfg);query.assert_called_once();driver.assert_not_called()
  def test_removing_matched_candidate_requires_new_person_task(self):
   state=watch.migrate_state({},self.cfg);state['targets'][A]['found']=outcome(A,True)['result'];watch.sync_completion(state)

@@ -6,15 +6,15 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
-import tick
-import watchdog
+from rednote_watchdesk import tick
+from rednote_watchdesk import watchdog
 
 
 class WatchdogTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'darwin', 'Mach clock requires macOS')
     def test_awake_clock_has_same_origin_in_separate_processes(self):
         here=watchdog.awake_clock()
-        other=float(subprocess.check_output(['/usr/bin/python3','-c','import watchdog; print(watchdog.awake_clock())'],text=True))
+        other=float(subprocess.check_output(['/usr/bin/python3','-c','from rednote_watchdesk import watchdog; print(watchdog.awake_clock())'],text=True))
         self.assertLess(abs(other-here),10)
         self.assertGreater(here,10)
     def test_fault_deduplicates_and_recovery_is_ordered(self):
@@ -92,6 +92,8 @@ class TickTests(unittest.TestCase):
         child=Mock();child.wait.return_value=0
         with patch.object(tick.subprocess,'Popen',return_value=child) as worker:
             tick.main();worker.assert_called_once()
+            self.assertEqual(worker.call_args.args[0], [sys.executable, '-m', 'rednote_watchdesk.watch', 'check'])
+            self.assertEqual(worker.call_args.kwargs['cwd'], tick.PROJECT)
     def test_timeout_terminates_own_group(self):
         child=Mock(pid=12345);child.wait.side_effect=[subprocess.TimeoutExpired('worker',180),0]
         with patch.object(tick.subprocess,'Popen',return_value=child),patch.object(tick.os,'killpg') as kill:

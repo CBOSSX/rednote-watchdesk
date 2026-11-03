@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
-import follow
-import follow_jobs
-import watch
-from test_watch import WorkflowTests
+from rednote_watchdesk import follow
+from rednote_watchdesk import follow_jobs
+from rednote_watchdesk import watch
+from tests import test_watch
 
 A='example_alpha'; B='example_beta'
 URL='https://www.xiaohongshu.com/user/profile/000000000000000000000001'
@@ -87,28 +87,28 @@ class FollowWorkflowTests(unittest.TestCase):
     def outcome(self,t,found=True):
         return {'status':'found' if found else 'not_found','result':dict(FOUND,red_id=t) if found else None,'result_count':1,'checked_at':watch.now()}
     def test_two_targets_follow_independently_and_stop_only_after_result_notifications(self):
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)) as query,patch.object(follow_jobs,'follow_once',return_value={'status':'followed'}) as driver,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)) as query,patch.object(follow_jobs,'follow_once',return_value={'status':'followed'}) as driver,patch.object(watch,'webhook') as notify:
             watch.run_check(self.cfg);watch.run_check(self.cfg)
             self.assertEqual(query.call_count,2);self.assertEqual(driver.call_count,2)
             self.assertEqual([c.kwargs['event']['kind'] for c in notify.call_args_list],['found','found','follow_success','follow_success'])
         self.assertTrue(self.state()['completed']);self.assertFalse(self.state()['follow_pending'])
     def test_offline_notifications_do_not_repeat_successful_follow(self):
         cfg=dict(self.cfg,targets=[A],auto_follow_targets=[A])
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)) as query,patch.object(follow_jobs,'follow_once',return_value={'status':'followed'}) as driver:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)) as query,patch.object(follow_jobs,'follow_once',return_value={'status':'followed'}) as driver:
             with patch.object(watch,'webhook',side_effect=RuntimeError('offline')):watch.run_check(cfg)
             self.assertFalse(self.state()['completed']);self.assertEqual(self.state()['targets'][A]['follow']['status'],'succeeded')
             with patch.object(watch,'webhook') as notify:watch.run_check(cfg);self.assertEqual(notify.call_count,2)
             driver.assert_called_once();query.assert_called_once()
         self.assertTrue(self.state()['completed'])
     def test_big_login_failure_pauses_following_but_other_search_continues(self):
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t,t==A)) as query,patch.object(follow_jobs,'follow_once',side_effect=watch.SitePaused('login_required')) as driver,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t,t==A)) as query,patch.object(follow_jobs,'follow_once',side_effect=watch.SitePaused('login_required')) as driver,patch.object(watch,'webhook') as notify:
             watch.run_check(self.cfg);watch.run_check(self.cfg)
             driver.assert_called_once();self.assertEqual([c.args[1] for c in query.call_args_list],[A,B,B])
             self.assertEqual([c.kwargs['event']['kind'] for c in notify.call_args_list],['found','follow_failure'])
         self.assertTrue(self.state()['follow_paused']);self.assertFalse(self.state().get('paused',False))
     def test_preclick_network_failure_retries_without_searching_found_target_again(self):
         cfg=dict(self.cfg,targets=[A],auto_follow_targets=[A],interval_seconds=1800)
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)) as query,patch.object(follow_jobs,'follow_once',side_effect=[TimeoutError('network'),{'status':'followed'}]) as driver,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)) as query,patch.object(follow_jobs,'follow_once',side_effect=[TimeoutError('network'),{'status':'followed'}]) as driver,patch.object(watch,'webhook') as notify:
             for clock in [10000,10001,10300]:
                 with patch.object(watch.time,'time',return_value=clock):watch.run_check(cfg)
             self.assertEqual(driver.call_count,2);query.assert_called_once()
@@ -117,7 +117,7 @@ class FollowWorkflowTests(unittest.TestCase):
     def test_crash_after_click_intent_resumes_with_verification_only(self):
         cfg=dict(self.cfg,targets=[A],auto_follow_targets=[A])
         def crash(*args,**kwargs):args[5]();raise SystemExit('crash after click intent')
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)) as query,patch.object(watch,'webhook'):
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)) as query,patch.object(watch,'webhook'):
             with patch.object(follow_jobs,'follow_once',side_effect=crash),self.assertRaises(SystemExit):watch.run_check(cfg)
             self.assertTrue(self.state()['targets'][A]['follow']['click_started'])
             with patch.object(follow_jobs,'follow_once',return_value={'status':'already_followed'}) as driver:watch.run_check(cfg)
@@ -125,7 +125,7 @@ class FollowWorkflowTests(unittest.TestCase):
         self.assertTrue(self.state()['completed'])
     def test_three_preclick_failures_end_with_failure_notice(self):
         cfg=dict(self.cfg,targets=[A],auto_follow_targets=[A])
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)),patch.object(follow_jobs,'follow_once',side_effect=TimeoutError('network')) as driver,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)),patch.object(follow_jobs,'follow_once',side_effect=TimeoutError('network')) as driver,patch.object(watch,'webhook') as notify:
             for clock in [10000,10300,10900,13000]:
                 with patch.object(watch.time,'time',return_value=clock):watch.run_check(cfg)
             self.assertEqual(driver.call_count,3)
@@ -134,13 +134,13 @@ class FollowWorkflowTests(unittest.TestCase):
         self.assertTrue(self.state()['completed']);self.assertEqual(self.state()['targets'][A]['follow']['status'],'failed')
     def test_additional_monitor_target_is_not_implicitly_authorized_for_follow(self):
         cfg=dict(self.cfg,targets=[A,B,'third_account'])
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)),patch.object(follow_jobs,'follow_once',return_value={'status':'followed'}) as driver,patch.object(watch,'webhook'):
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t)),patch.object(follow_jobs,'follow_once',return_value={'status':'followed'}) as driver,patch.object(watch,'webhook'):
             watch.run_check(cfg);watch.run_check(cfg)
             self.assertEqual([c.args[3] for c in driver.call_args_list],[A,B])
         self.assertNotIn('follow',self.state()['targets']['third_account']);self.assertTrue(self.state()['completed'])
     def test_legacy_found_and_notified_account_gets_follow_task_after_enablement(self):
         watch.write_json(watch.STATE,{'completed':True,'found':FOUND})
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t,False)) as query,patch.object(follow_jobs,'follow_once',return_value={'status':'already_followed'}) as driver,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:self.outcome(t,False)) as query,patch.object(follow_jobs,'follow_once',return_value={'status':'already_followed'}) as driver,patch.object(watch,'webhook') as notify:
             watch.run_check(self.cfg)
             self.assertEqual(query.call_args.args[1],B);driver.assert_called_once()
             self.assertEqual(notify.call_args.kwargs['event']['kind'],'follow_success')

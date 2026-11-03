@@ -25,6 +25,10 @@ def normalize(config):
         if type(enabled) is not bool or not isinstance(allowed, list) or any(t not in candidates for t in allowed):
             raise ValueError('自动关注名单必须是监听目标的子集')
         people = [{'id': 'account_'+str(t).lower(), 'name': t, 'candidates': [t], 'auto_follow': t in allowed} for t in candidates]
+    multi = 'search_account_id' in config or any(isinstance(p, dict) and 'follow_account_ids' in p for p in people)
+    search_account = config.get('search_account_id')
+    if multi and search_account is not None and (not isinstance(search_account, str) or not PERSON_ID.fullmatch(search_account)):
+        raise ValueError('搜索账号标识无效')
     result, ids, owners = [], set(), {}
     for person in people:
         if not isinstance(person, dict):
@@ -39,6 +43,13 @@ def normalize(config):
             raise ValueError(name+'：请填写 1–10 个候选小红书号')
         if type(follow) is not bool:
             raise ValueError(name+'：自动关注必须为 true 或 false')
+        followers = person.get('follow_account_ids', [])
+        if multi:
+            if not isinstance(followers, list) or len(followers) > 20 or any(not isinstance(a, str) or not PERSON_ID.fullmatch(a) for a in followers) or len(set(followers)) != len(followers):
+                raise ValueError(name+'：关注账号列表必须唯一且有效')
+            if 'follow_account_ids' not in person and follow:
+                followers = ['legacy_follow']
+            follow = bool(followers)
         for candidate in candidates:
             if not isinstance(candidate, str) or not RED_ID.fullmatch(candidate):
                 raise ValueError(name+'：小红书号只支持 3–40 位字母、数字、下划线或连字符')
@@ -48,9 +59,14 @@ def normalize(config):
             owners[key] = name
         ids.add(pid)
         result.append({'id': pid, 'name': name.strip(), 'candidates': list(candidates), 'auto_follow': follow})
+        if multi:
+            result[-1]['follow_account_ids'] = list(followers)
     if len(owners) > 10:
         raise ValueError('全部分组合计最多支持 10 个候选账号')
-    return {'interval_seconds': interval, 'people': result}
+    plan = {'interval_seconds': interval, 'people': result}
+    if multi:
+        plan['search_account_id'] = search_account
+    return plan
 
 def targets(config):
     return [t for p in normalize(config)['people'] for t in p['candidates']]

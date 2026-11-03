@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-import watch
+from rednote_watchdesk import watch
 
 
 class MatchTests(unittest.TestCase):

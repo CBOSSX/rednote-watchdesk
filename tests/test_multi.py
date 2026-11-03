@@ -2,8 +2,8 @@ import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
-import watch
-from test_watch import WorkflowTests
+from rednote_watchdesk import watch
+from tests import test_watch
 
 A='example_alpha'
 B='example_beta'
@@ -22,12 +22,12 @@ class MultiTests(unittest.TestCase):
     def state(self):return watch.read_json(watch.STATE)
     def test_finding_one_keeps_other_monitoring(self):
         def search(page,t):return outcome(t,t==A)
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=search) as query,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=search) as query,patch.object(watch,'webhook') as notify:
             watch.run_check(self.cfg);watch.run_check(self.cfg)
             self.assertEqual([c.args[1] for c in query.call_args_list],[A,B,B]);notify.assert_called_once()
         self.assertTrue(self.state()['targets'][A]['completed']);self.assertFalse(self.state()['completed'])
     def test_both_found_pending_notifications_retry_without_requery(self):
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,True)) as query:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t,True)) as query:
             with patch.object(watch,'webhook',side_effect=RuntimeError('offline')):watch.run_check(self.cfg)
             self.assertTrue(self.state()['query_complete']);self.assertFalse(self.state()['completed'])
             with patch.object(watch,'webhook') as notify:watch.run_check(self.cfg);self.assertEqual(notify.call_count,2)
@@ -37,7 +37,7 @@ class MultiTests(unittest.TestCase):
         def search(p,t):
             if t==A:raise TimeoutError('timeout')
             return outcome(t)
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=search) as query,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=search) as query,patch.object(watch,'webhook') as notify:
             clock=10000
             for count,delay in enumerate([300,600,1200,1800,1800,1800],1):
                 with patch.object(watch.time,'time',return_value=clock):watch.run_check(self.cfg)
@@ -53,7 +53,7 @@ class MultiTests(unittest.TestCase):
 
     def test_persisted_retries_recover_and_return_to_normal_interval(self):
         cfg=dict(self.cfg,interval_seconds=1800)
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=TimeoutError('timeout')) as query,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=TimeoutError('timeout')) as query,patch.object(watch,'webhook') as notify:
             for clock in [10000,10300,10900]:
                 with patch.object(watch.time,'time',return_value=clock):watch.run_check(cfg)
             self.assertEqual(notify.call_count,2)
@@ -73,7 +73,7 @@ class MultiTests(unittest.TestCase):
 
     def test_offline_fault_and_recovery_are_delivered_in_order(self):
         watch.write_json(watch.STATE,{'targets':{A:{'consecutive_errors':2},B:{'completed':True,'found':outcome(B,True)['result']}}})
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=TimeoutError('offline')) as query:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=TimeoutError('offline')) as query:
             with patch.object(watch,'webhook',side_effect=RuntimeError('offline')):
                 with patch.object(watch.time,'time',return_value=10000):watch.run_check(self.cfg)
                 query.side_effect=lambda p,t:outcome(t)
@@ -94,17 +94,17 @@ class MultiTests(unittest.TestCase):
         for entry in self.state()['targets'].values():
             self.assertFalse(entry.get('paused',False));self.assertEqual(entry['consecutive_errors'],4)
     def test_security_gate_pauses_all(self):
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=watch.SitePaused('login_required')) as query,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=watch.SitePaused('login_required')) as query,patch.object(watch,'webhook') as notify:
             watch.run_check(self.cfg);watch.run_check(self.cfg);query.assert_called_once();notify.assert_called_once()
         self.assertTrue(self.state()['paused'])
     def test_legacy_completed_account_is_not_requeried_after_adding_target(self):
         watch.write_json(watch.STATE,{'completed':True,'found':outcome(A,True)['result']})
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t)) as query,patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t)) as query,patch.object(watch,'webhook') as notify:
             watch.run_check(self.cfg);self.assertEqual(query.call_args.args[1],B);notify.assert_not_called()
         self.assertFalse(self.state()['completed']);self.assertTrue(self.state()['targets'][A]['completed'])
     def test_resume_recovery_notice_waits_for_success(self):
         watch.write_json(watch.STATE,{'recovery_pending':True})
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t)),patch.object(watch,'webhook') as notify:
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t)),patch.object(watch,'webhook') as notify:
             watch.run_check(self.cfg);watch.run_check(self.cfg);notify.assert_called_once()
             self.assertIn('已恢复',notify.call_args.args[0]);self.assertIn(B,notify.call_args.args[0])
     def test_only_due_target_is_queried_when_clocks_are_staggered(self):
@@ -112,7 +112,7 @@ class MultiTests(unittest.TestCase):
         now=time.time()
         cfg=dict(self.cfg,interval_seconds=1800)
         watch.write_json(watch.STATE,{'targets':{A:{'last_attempt_epoch':now},B:{'last_attempt_epoch':now-1900}}})
-        with patch.object(watch,'browser_page',WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t)) as query,patch.object(watch,'webhook'):
+        with patch.object(watch,'browser_page',test_watch.WorkflowTests.browser),patch.object(watch,'search',side_effect=lambda p,t:outcome(t)) as query,patch.object(watch,'webhook'):
             watch.run_check(cfg);self.assertEqual(query.call_args.args[1],B);query.assert_called_once()
 
 

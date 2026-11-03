@@ -1,11 +1,12 @@
 {
   "interval_seconds": 1800,
+  "search_account_id": "acct_example_search",
   "people": [
     {
       "id": "person_alice",
       "name": "Alice",
       "candidates": ["example_alice", "example_alice2"],
-      "auto_follow": false
+      "follow_account_ids": []
     }
   ]
 }

@@ -6,8 +6,8 @@ from pathlib import Path
 import plistlib
 import subprocess
 import sys
-from paths import RUNTIME, PROJECT, MONITOR_LABEL
-from config_server import ensure_home
+from rednote_watchdesk.paths import RUNTIME, PROJECT, MONITOR_LABEL
+from rednote_watchdesk.config_server import ensure_home
 
 LABELS = {'monitor':MONITOR_LABEL, 'watchdog':'app.rednote-watchdesk.watchdog','ui':'app.rednote-watchdesk.ui'}
 
@@ -21,9 +21,9 @@ def main():
         subprocess.run(['/bin/launchctl','bootout',domain+'/'+label],capture_output=True)
         if args.uninstall:
             path.unlink(missing_ok=True);continue
-        if role=='monitor':argv=[sys.executable,str(PROJECT/'tick.py')];interval=60
-        elif role=='watchdog':argv=['/usr/bin/python3',str(PROJECT/'watchdog.py')];interval=300
-        else:argv=[sys.executable,str(PROJECT/'config_server.py'),'--no-scheduler'];interval=None
+        if role=='monitor':argv=[sys.executable,'-m','rednote_watchdesk.tick'];interval=60
+        elif role=='watchdog':argv=['/usr/bin/python3','-m','rednote_watchdesk.watchdog'];interval=300
+        else:argv=[sys.executable,'-m','rednote_watchdesk.config_server','--no-scheduler'];interval=None
         payload={'Label':label,'ProgramArguments':argv,'WorkingDirectory':str(PROJECT),
                  'EnvironmentVariables':{'REDNOTE_WATCHDESK_HOME':str(RUNTIME)},
                  'RunAtLoad':True,'ProcessType':'Background','LimitLoadToSessionType':'Aqua',

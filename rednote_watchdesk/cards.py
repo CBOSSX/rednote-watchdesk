@@ -2,7 +2,7 @@
 import datetime as dt
 from html import escape
 import re
-from mentions import mention_tags
+from rednote_watchdesk.mentions import mention_tags
 
 STYLES = {
     'found': ('发现账号', 'green', '小红书号已精确匹配', '请确认本人及店铺归属后关注；此账号通知成功后结束监测，其他账号继续。'),
@@ -11,23 +11,25 @@ STYLES = {
     'query_recovery': ('查询已恢复', 'green', '查询已验证成功', '已恢复正常查询间隔，约每 30–35 分钟检查一次。'),
     'recovery': ('监测已恢复', 'green', '监测已恢复运行', '继续监听目标账号，约每 30–35 分钟检查一次。'),
     'fault': ('运行异常', 'red', '监测运行出现异常', '请检查本机运行情况；看门狗会继续检查，恢复后通知。'),
-    'follow_success': ('自动关注成功', 'green', '大号已关注该账号', '已刷新主页确认关注状态，其他目标继续按配置监听。'),
-    'follow_failure': ('自动关注未成功', 'orange', '大号自动关注未成功', '请打开主页确认，必要时手动关注；小号继续监听其他未发现的目标。'),
-    'follow_ready': ('自动关注已就绪', 'green', '大号登录已验证，自动关注已就绪', '小号发现目标后，大号将核对账号并关注；成功或失败都会通过卡片提醒。'),
+    'follow_success': ('自动关注成功', 'green', '执行账号已关注该账号', '已刷新主页确认关注状态，其他目标继续按配置监听。'),
+    'follow_failure': ('自动关注未成功', 'orange', '执行账号自动关注未成功', '请打开主页确认，必要时手动关注；搜索账号继续监听其他未发现的目标。'),
+    'follow_ready': ('自动关注已就绪', 'green', '执行账号登录已验证，自动关注已就绪', '搜索账号发现目标后，执行账号将核对账号并关注；成功或失败都会通过卡片提醒。'),
     'test': ('通知测试', 'blue', '卡片通知已启用', '这是一条测试消息，不代表发现账号或发生故障。'),
 }
-REASONS = {'login_required': '小号登录已失效', 'ip_risk': '当前网络被平台判定存在风险',
+REASONS = {'login_required': '搜索账号登录已失效', 'ip_risk': '当前网络被平台判定存在风险',
            'risk_control': '平台要求安全验证或触发风控', 'http_403': '平台拒绝访问',
            'http_429': '平台限制访问频率', 'TimeoutError': '页面加载或查询超时',
            'TargetClosedError': '浏览器意外关闭',
-           'follow_account_not_ready': '大号尚未完成登录配置',
-           'follow_account_mismatch': '当前登录账号与配置的大号不一致',
+           'search_account_not_ready': '搜索账号尚未完成登录',
+           'search_account_mismatch': '当前登录身份与所选搜索账号不一致',
+           'follow_account_not_ready': '执行账号尚未完成登录配置',
+           'follow_account_mismatch': '当前登录账号与配置的执行账号不一致',
            'follow_target_mismatch': '主页上的小红书号或主页地址与目标不一致',
            'follow_button_unavailable': '暂时无法识别主页上的关注按钮',
            'follow_not_confirmed': '未能确认关注成功，需要人工检查',
            'follow_not_allowlisted': '目标不在已授权的自动关注名单中',
            'follow_invalid_profile': '目标主页地址无法通过校验',
-           'follow_self_refused': '目标是大号本人，已停止操作'}
+           'follow_self_refused': '目标是执行账号本人，已停止操作'}
 
 
 def safe_text(value):
@@ -56,14 +58,14 @@ def notification_payload(text, secret, event=None, source='monitor'):
         interval = event.get('interval_seconds', 1800) / 60
         action = '已恢复正常轮询，配置间隔为 ' + format(interval, 'g') + ' 分钟。'
     if kind == 'found' and event.get('auto_follow_enabled'):
-        action = '已交由大号自动关注，成功或失败将另发结果卡片；你也可以先打开主页确认本人及店铺归属。'
+        action = '已交由选中的账号分别自动关注，成功或失败将另发结果卡片；你也可以先打开主页确认本人及店铺归属。'
     if kind == 'follow_success' and event.get('already_followed'):
-        action = '大号此前已关注，本次未重复点击关注按钮。'
+        action = '执行账号此前已关注，本次未重复点击关注按钮。'
     if kind == 'follow_failure' and event.get('follow_status') == 'retry':
         action = ('后续将自动核对关注状态，不再重复点击。' if event.get('click_started') else
                   '稍后自动重试，最多尝试 3 次；成功后通知。')
     if kind == 'follow_failure' and event.get('follow_status') == 'blocked':
-        action = '自动关注已暂停，请检查或重新登录大号后恢复；小号的轮询继续。'
+        action = '此账号自动关注已暂停，请检查或重新登录后恢复；其他账号的任务可继续。'
     if source == 'watchdog' and kind == 'recovery':
         title, headline = '运行已恢复', '主监测调度及查询尝试已恢复'
         action = '看门狗将继续检查运行情况；查询结果以账号查询通知为准。'
@@ -98,7 +100,7 @@ def notification_payload(text, secret, event=None, source='monitor'):
         if previous:
             info.append(markdown("<font color='grey'>此前异常</font>\n" + safe_text(previous)))
     if event.get('actor_name'):
-        info.append(markdown("<font color='grey'>关注使用的大号</font>\n" + safe_text(event['actor_name'])))
+        info.append(markdown("<font color='grey'>关注使用的执行账号</font>\n" + safe_text(event['actor_name'])))
     elements = [markdown('**' + headline + '**\n' + action),
                 {'tag': 'column_set', 'flex_mode': 'none', 'columns': [
                     {'tag': 'column', 'width': 'weighted', 'weight': 1,

@@ -5,8 +5,8 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
-import config_server as server
-from watch_config import signature
+from rednote_watchdesk import config_server as server
+from rednote_watchdesk.watch_config import signature
 
 class ServerTests(unittest.TestCase):
  def setUp(self):
@@ -23,6 +23,64 @@ class ServerTests(unittest.TestCase):
   r=c.getresponse();data=r.read().decode();c.close();return r.status,data
  def test_state_never_returns_notification_secrets(self):
   code,data=self.request('/api/state');self.assertEqual(code,200);self.assertNotIn('PRIVATE_TEST_VALUE',data);self.assertNotIn('PRIVATE_SIGNING_VALUE',data)
+ def test_page_and_module_assets_are_served_after_directory_move(self):
+  code,html=self.request('/');self.assertEqual(code,200)
+  self.assertIn('type="module" src="/js/app.js"',html)
+  self.assertNotIn('__CSRF_TOKEN__',html)
+  for asset in ['/js/app.js','/js/motion.js','/js/accounts.js','/css/style.css','/css/motion.css']:
+   code,body=self.request(asset);self.assertEqual(code,200,asset);self.assertTrue(body)
+  for path in ['/js/../../secrets.json','/rednote_watchdesk/paths.py','/examples/secrets.example.json']:
+   self.assertEqual(self.request(path)[0],404)
+ def test_create_accounts_and_save_one_search_multiple_followers(self):
+  ids=[]
+  for label in ['first','second']:
+   code,data=self.request('/api/accounts',{'label':label});self.assertEqual(code,201)
+   ids.append(json.loads(data)['account']['id'])
+  config={'interval_seconds':1800,'search_account_id':ids[0],'people':[{'id':'person','name':'Person','candidates':['example_person'],'follow_account_ids':ids}]}
+  with patch.object(server,'wake'):
+   code,_=self.request('/api/config',{'version':signature(server.read(self.root/'config.json')),'config':config})
+  self.assertEqual(code,200)
+  code,data=self.request('/api/state');result=json.loads(data)
+  self.assertEqual(result['config']['search_account_id'],ids[0])
+  self.assertEqual(result['config']['people'][0]['follow_account_ids'],ids)
+  self.assertTrue(result['config']['people'][0]['auto_follow'])
+ def test_missing_actor_and_old_client_cannot_overwrite_multi_account_config(self):
+  config={'interval_seconds':1800,'search_account_id':'missing','people':[]}
+  body={'version':signature(server.read(self.root/'config.json')),'config':config}
+  self.assertEqual(self.request('/api/config',body)[0],400)
+  server.write(self.root/'config.json',dict(config,search_account_id=None))
+  body={'version':signature(server.read(self.root/'config.json')),'config':{'people':[]}}
+  self.assertEqual(self.request('/api/config',body)[0],409)
+ def test_login_and_control_jobs_have_account_identity_and_page_scope(self):
+  _,data=self.request('/api/accounts',{'label':'one'});aid=json.loads(data)['account']['id']
+  with patch.object(server,'start_job',return_value='test-job') as start:
+   self.assertEqual(self.request('/api/login',{'account_id':aid})[0],202)
+   self.assertEqual(start.call_args.kwargs['account_id'],aid);self.assertEqual(start.call_args.kwargs['scope'],'accounts')
+   self.assertEqual(self.request('/api/control',{'action':'test-webhook'})[0],202)
+   self.assertEqual(start.call_args.kwargs['scope'],'settings')
+   self.assertEqual(self.request('/api/login',{'account_id':'../escape'})[0],400)
+ def test_legacy_selection_survives_config_upgrade_without_enrolled_files(self):
+  config={'interval_seconds':1800,'people':[{'id':'person','name':'Person','candidates':['example_person'],'auto_follow':True}]}
+  server.write(self.root/'config.json',config)
+  _,data=self.request('/api/state');payload=json.loads(data)
+  with patch.object(server,'wake'):
+   self.assertEqual(self.request('/api/config',{'version':payload['version'],'config':payload['config']})[0],200)
+  _,data=self.request('/api/state');payload=json.loads(data)
+  self.assertEqual({a['id'] for a in payload['accounts']},{'legacy_search','legacy_follow'})
+  self.assertEqual(payload['config']['people'][0]['follow_account_ids'],['legacy_follow'])
+ def test_rename_account_does_not_wake_monitor_or_change_configuration(self):
+  _,data=self.request('/api/accounts',{'label':'original'});aid=json.loads(data)['account']['id']
+  config=(self.root/'config.json').read_bytes();state=(self.root/'data/state.json').read_bytes()
+  body={'account_id':aid,'label':'my account','previous_label':'original'}
+  with patch.object(server,'wake') as wake,patch.object(server,'start_job') as job:
+   self.assertEqual(self.request('/api/accounts/rename',body,**{'X-CSRF-Token':''})[0],403)
+   self.assertEqual(self.request('/api/accounts/rename',body)[0],200)
+   self.assertEqual(self.request('/api/accounts/rename',body)[0],409)
+   wake.assert_not_called();job.assert_not_called()
+  self.assertEqual((self.root/'config.json').read_bytes(),config)
+  self.assertEqual((self.root/'data/state.json').read_bytes(),state)
+  _,data=self.request('/api/state')
+  self.assertEqual(json.loads(data)['accounts'][0]['label'],'my account')
  def test_secret_files_and_path_traversal_not_served(self):
   for path in ['/secrets.json','/data/state.json','/../secrets.json']:
    self.assertEqual(self.request(path)[0],404)

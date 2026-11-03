@@ -1,0 +1,30 @@
+:root {
+  --motion-fast: 160ms;
+  --motion-ease: cubic-bezier(.22, 1, .36, 1);
+}
+.nav, .filter-button, .button, .icon-button, .link-button, .remove-candidate, .add-candidate {
+  transition: background-color var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast), transform var(--motion-fast) var(--motion-ease), opacity var(--motion-fast);
+}
+.button:active:not(:disabled), .filter-button:active, .nav:active { transform: scale(.97); }
+.person-card { transition: border-color 180ms, box-shadow 180ms; }
+.search-box, .candidate-row, .field input, .field textarea {
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background-color var(--motion-fast);
+}
+.pill, .saved-credential { transition: background-color 180ms, color 180ms; }
+.switch span { transition: background-color 200ms; }
+.switch span:before { transition: transform 220ms var(--motion-ease); }
+#toast {
+  transform: translate(-50%, 12px);
+  visibility: hidden;
+  transition: opacity 180ms, transform 240ms var(--motion-ease), visibility 180ms;
+}
+#toast.show { transform: translate(-50%, 0); visibility: visible; }
+@media (hover: hover) {
+  .nav:not(.active):hover { background: #faf4f6; color: #c16b80; }
+  .person-card:hover { border-color: #eadce2; box-shadow: 0 6px 22px #39202b06; }
+  .button:hover:not(:disabled) { transform: translateY(-1px); }
+  .button:active:not(:disabled) { transform: scale(.97); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}

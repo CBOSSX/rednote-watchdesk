@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import sys
 
-PROJECT = Path(__file__).resolve().parent
+PROJECT = Path(__file__).resolve().parent.parent
 
 def default_home():
     if sys.platform == 'darwin':

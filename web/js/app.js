@@ -1,8 +1,12 @@
-'use strict';
+import {layoutChange, reveal, scrollToNode, setVisible, toggleDisclosure} from './motion.js';
+import {accountName, editAccountLabel, renderAccounts, renderFollowerOptions} from './accounts.js';
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
 let latest = null, dirty = false, version = '', toastTimer, selectedFilter = 'all';
+let currentTab = 'people', searchAccountId = null;
+let jobsInitialized = false;
+const seenJobResults = new Set(), recentJobResults = new Map();
 const credentialEditing = {webhook: false, signing: false};
 const time = value => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '尚未运行';
 
@@ -23,8 +27,15 @@ async function api(path, body) {
   return data;
 }
 function switchTab(tab) {
-  for (const name of ['people', 'accounts', 'settings']) $('#' + name + '-tab').classList.toggle('hidden', name !== tab);
-  $$('.nav').forEach(node => node.classList.toggle('active', node.dataset.tab === tab));
+  if (currentTab === tab) return;
+  currentTab = tab;
+  for (const name of ['people', 'accounts', 'settings']) setVisible($('#' + name + '-tab'), name === tab);
+  $$('.nav').forEach(node => {
+    node.classList.toggle('active', node.dataset.tab === tab);
+    if (node.dataset.tab === tab) node.setAttribute('aria-current', 'page');
+    else node.removeAttribute('aria-current');
+  });
+  reveal($('#page-title').parentElement, 5);
   $('#page-title').textContent = {people: '监控目标', accounts: '登录账号', settings: '轮询与通知'}[tab];
   $('#page-subtitle').textContent = {people: '管理候选账号、查询状态与自动关注', accounts: '独立登录，分别保存', settings: '让雷达按你的节奏运行'}[tab];
 }
@@ -33,7 +44,8 @@ function readEditors() {
   return $$('.person-card').map(card => ({
     id: card.dataset.id, name: card.querySelector('.name').value.trim(),
     candidates: [...card.querySelectorAll('.candidate-input')].map(input => input.value.trim()).filter(Boolean),
-    auto_follow: card.querySelector('.auto-follow').checked
+    auto_follow: card.querySelectorAll('.follow-account:checked').length > 0,
+    follow_account_ids: [...card.querySelectorAll('.follow-account:checked')].map(input => input.value)
   }));
 }
 function changed() {
@@ -64,6 +76,9 @@ function updateStats() {
   }
 }
 function applyFilters() {
+  layoutChange($('#people-list'), updateFilters);
+}
+function updateFilters() {
   const query = $('#target-search').value.trim().toLocaleLowerCase();
   const cards = $$('.person-card');
   const counts = {all: cards.length, waiting: 0, matched: 0, completed: 0, attention: 0, paused: 0};
@@ -84,8 +99,8 @@ function applyFilters() {
     button.querySelector('.filter-count').textContent = counts[button.dataset.filter];
   }
   $('#results-count').textContent = '显示 ' + visible + ' / ' + cards.length + ' 组';
-  $('#empty').classList.toggle('hidden', cards.length > 0);
-  $('#filter-empty').classList.toggle('hidden', cards.length === 0 || visible > 0);
+  setVisible($('#empty'), cards.length === 0);
+  setVisible($('#filter-empty'), cards.length > 0 && visible === 0);
   $('#status-filters').classList.toggle('hidden', cards.length === 0);
   $('#people-list').classList.toggle('hidden', cards.length === 0);
 }
@@ -131,36 +146,43 @@ function addCandidate(card, value = '', focus = false, after = null) {
     changed();
   });
   remove.onclick = () => {
-    if (list.children.length === 1) input.value = ''; else row.remove();
-    reindexCandidates(card); changed();
+    const next = row.nextElementSibling || row.previousElementSibling;
+    layoutChange(list, () => {
+      if (list.children.length === 1) input.value = ''; else row.remove();
+      reindexCandidates(card);
+    });
+    (next?.querySelector('.candidate-input') || input).focus({preventScroll: true});
+    changed();
   };
   reindexCandidates(card);
-  if (focus) input.focus();
+  if (focus) { reveal(row, 6); input.focus({preventScroll: true}); }
 }
 function renderPeople(people) {
   const list = $('#people-list'); list.replaceChildren();
-  for (const person of people) {
-    const card = $('#person-template').content.firstElementChild.cloneNode(true);
-    card.dataset.id = person.id;
-    card.querySelector('.name').value = person.name;
-    card.querySelector('.auto-follow').checked = person.auto_follow;
-    card.querySelector('.person-avatar').textContent = (person.name || '?').slice(0, 1).toUpperCase();
-    card.querySelector('.auto-follow').setAttribute('aria-label', (person.name || '当前目标') + '自动关注');
-    for (const candidate of person.candidates.length ? person.candidates : ['']) addCandidate(card, candidate);
-    card.querySelector('.name').addEventListener('input', () => {
-      card.querySelector('.person-avatar').textContent = (card.querySelector('.name').value || '?').slice(0, 1).toUpperCase(); changed();
-    });
-    card.querySelector('.name').addEventListener('blur', () => setTimeout(applyFilters, 0));
-    card.querySelector('.auto-follow').addEventListener('input', changed);
-    card.querySelector('.add-candidate').onclick = () => { addCandidate(card, '', true); changed(); };
-    card.querySelector('.remove').onclick = () => {
-      if (confirm('删除“' + (card.querySelector('.name').value || '未命名目标') + '”的监控配置？现有关注关系将保留')) {
-        card.remove(); changed();
-      }
-    };
-    list.append(card);
-  }
+  for (const person of people) list.append(createPerson(person));
   updateStats(); renderStatuses();
+}
+function createPerson(person) {
+  const card = $('#person-template').content.firstElementChild.cloneNode(true);
+  card.dataset.id = person.id;
+  card.querySelector('.name').value = person.name;
+  renderFollowerOptions(card, latest?.accounts || [], person.follow_account_ids || [], changed);
+  card.querySelector('.person-avatar').textContent = (person.name || '?').slice(0, 1).toUpperCase();
+  for (const candidate of person.candidates.length ? person.candidates : ['']) addCandidate(card, candidate);
+  card.querySelector('.name').addEventListener('input', () => {
+    card.querySelector('.person-avatar').textContent = (card.querySelector('.name').value || '?').slice(0, 1).toUpperCase(); changed();
+  });
+  card.querySelector('.name').addEventListener('blur', () => setTimeout(applyFilters, 0));
+  card.querySelector('.add-candidate').onclick = () => { addCandidate(card, '', true); changed(); };
+  card.querySelector('.remove').onclick = () => {
+    if (confirm('删除“' + (card.querySelector('.name').value || '未命名目标') + '”的监控配置？现有关注关系将保留')) {
+      const next = card.nextElementSibling || card.previousElementSibling;
+      layoutChange($('#people-list'), () => { card.remove(); dirty = true; updateStats(); updateFilters(); });
+      $('#save-hint').textContent = '有未保存的修改';
+      (next && !next.classList.contains('hidden') ? next.querySelector('.name') : $('#add-person')).focus({preventScroll: true});
+    }
+  };
+  return card;
 }
 function renderStatuses() {
   if (!latest) return;
@@ -183,6 +205,13 @@ function renderStatuses() {
         const link = document.createElement('a'); link.href = state.result.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '查看主页 ↗'; info.append(link);
       }
     } else if (state?.last_checked_at) { info.textContent = '上次查询 ' + time(state.last_checked_at); }
+    for (const job of state?.follow_jobs || []) {
+      if (job.status === 'waiting_match') continue;
+      const line = document.createElement('div'); line.className = 'follow-task-status';
+      const account = latest.accounts.find(a => a.id === job.account_id);
+      line.textContent = accountName(account) + ' · ' + ({pending: '等待关注', running: '关注中', retry: '等待重试', succeeded: '已关注', failed: '关注未成功', blocked: '需重新登录'}[job.status] || job.status);
+      info.append(line);
+    }
     info.classList.toggle('hidden', !info.childNodes.length);
   }
   applyFilters();
@@ -194,7 +223,9 @@ function renderNotificationFields() {
     const editing = credentialEditing[slot];
     $('#' + slot + '-status').textContent = saved ? '已配置' : '未配置';
     $('#' + slot + '-saved').classList.toggle('hidden', !saved);
-    $('#' + slot + '-editor').classList.toggle('hidden', !!saved && !editing);
+    toggleDisclosure($('#' + slot + '-editor'), !saved || editing);
+    $('#replace-' + slot).setAttribute('aria-expanded', String(editing));
+    $('#replace-' + slot).setAttribute('aria-controls', slot + '-editor');
     $('#replace-' + slot).textContent = editing ? '取消更换' : '更换';
     $('#' + slot).placeholder = saved ? '请输入新的' + label : slot === 'webhook' ? '请输入飞书或 Lark 自定义机器人的 Webhook 地址' : '机器人开启签名校验时，请输入签名密钥';
     $('#' + slot + '-hint').textContent = saved ? (editing ? '填写新值后，点击下方“保存通知设置”生效' : '已安全保存。可点击“更换”或“清除”，内容不会显示') : slot === 'webhook' ? '首次使用请填写你自己的 Webhook 地址' : '未开启签名校验时无需填写';
@@ -222,33 +253,27 @@ function renderStatus() {
   badge.textContent = latest.config.people.length === 0 ? '等待配置' : latest.pending_apply ? '配置待应用' : state.paused ? '监测已暂停' : state.completed ? '全部已完成' : '监测已开启';
   badge.classList.toggle('green', !state.paused && !latest.pending_apply);
   $('#pause').classList.toggle('hidden', state.paused); $('#resume').classList.toggle('hidden', !state.paused);
-  $('#follow-resume').classList.toggle('hidden', !state.follow_paused);
   $('#last-run').textContent = state.heartbeat_at ? new Date(state.heartbeat_at * 1000).toLocaleTimeString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '尚未运行';
   const messages = [];
   if (latest.pending_apply) messages.push('配置已保存，后台将在当前轮次结束后应用');
   if (state.worker_fault) messages.push('后台运行异常，请检查本机网络和日志');
-  if (state.follow_paused) messages.push('大号自动关注已暂停，请前往“登录账号”处理后恢复');
+  if (state.follow_paused) messages.push('部分账号的自动关注已暂停，请前往“登录账号”处理后恢复');
   if (state.pending_notifications) messages.push('有通知等待发送；请检查飞书配置和网络');
-  $('#banner').classList.toggle('hidden', messages.length === 0); $('#banner').textContent = messages.join(' ');
-  for (const role of ['search', 'follow']) {
-    const account = latest.accounts[role], node = $('#' + role + '-account'); node.replaceChildren();
-    if (account.name) {
-      const name = document.createElement('strong'); name.textContent = account.name; node.append(name);
-      const id = document.createElement('div'); id.textContent = '小红书号：' + account.red_id; node.append(id);
-      const caption = document.createElement('small'); caption.textContent = '登录态已保存 · ' + time(account.enrolled_at); node.append(caption);
-    } else node.textContent = '尚未保存登录信息';
+  $('#banner').textContent = messages.join(' '); setVisible($('#banner'), messages.length > 0);
+  const running = latest.jobs.some(job => job.status === 'running');
+  renderAccounts(latest.accounts, searchAccountId, running, {login: loginAccount, resume: aid => control('follow-resume', aid), rename: account => editAccountLabel(account, renameAccount)});
+  for (const card of $$('.person-card')) {
+    const selected = [...card.querySelectorAll('.follow-account:checked')].map(input => input.value);
+    renderFollowerOptions(card, latest.accounts, selected, changed);
   }
-  const running = latest.jobs.find(job => job.status === 'running'); $$('.login,.fresh').forEach(button => button.disabled = !!running);
-  $('#jobs').replaceChildren();
-  for (const job of latest.jobs.slice(-4).reverse()) {
-    const node = document.createElement('div'); node.textContent = job.title + ' · ' + (job.status === 'running' ? '操作进行中，请查看 Chrome 窗口' : job.message); $('#jobs').append(node);
-  }
+  renderJobs();
   renderStatuses(); updateStats();
 }
 async function load(initial = false) {
   try {
     latest = await api('/api/state');
     if (initial) {
+      searchAccountId = latest.config.search_account_id;
       version = latest.version; $('#interval').value = latest.config.interval_seconds / 60;
       renderPeople(latest.config.people);
       $('#mentions').value = latest.notifications.mention_users.map(user => user.name + ',' + user.user_id).join('\n');
@@ -258,36 +283,81 @@ async function load(initial = false) {
 }
 async function savePeople() {
   try {
-    const config = {interval_seconds: Number($('#interval').value) * 60, people: readEditors()};
+    const config = {interval_seconds: Number($('#interval').value) * 60, search_account_id: searchAccountId, people: readEditors()};
     await api('/api/config', {version, config}); dirty = false;
     const result = await api('/api/state'); version = result.version; latest = result;
     $('#save-hint').textContent = '已保存'; toast('配置已保存'); renderStatus();
   } catch (error) { toast(error.message, true); }
 }
 function addPerson() {
-  const people = readEditors();
-  people.push({id: 'p_' + crypto.randomUUID().replaceAll('-', '').slice(0, 16), name: '', candidates: [], auto_follow: false});
-  $('#target-search').value = ''; selectedFilter = 'all'; renderPeople(people); changed();
-  const card = $$('.person-card').at(-1); card.scrollIntoView({block: 'nearest', behavior: 'smooth'}); card.querySelector('.name').focus();
+  const card = createPerson({id: 'p_' + crypto.randomUUID().replaceAll('-', '').slice(0, 16), name: '', candidates: [], auto_follow: false});
+  $('#target-search').value = ''; selectedFilter = 'all';
+  layoutChange($('#people-list'), () => {
+    $('#people-list').append(card);
+    dirty = true; $('#save-hint').textContent = '有未保存的修改';
+    updateStats(); renderStatuses();
+  });
+  card.querySelector('.name').focus({preventScroll: true});
+  scrollToNode(card);
 }
-async function control(action) {
-  try { await api('/api/control', {action}); toast('操作已提交'); setTimeout(() => load(), 600); }
+async function control(action, accountId = null) {
+  try { await api('/api/control', {action, account_id: accountId}); toast('操作已提交'); setTimeout(() => load(), 600); }
   catch (error) { toast(error.message, true); }
 }
 $$('.nav').forEach(node => node.onclick = () => switchTab(node.dataset.tab));
 $('#add-person').onclick = addPerson; $('#add-empty').onclick = addPerson;
 $('#save-people').onclick = savePeople; $('#save-interval').onclick = savePeople;
 $('#pause').onclick = () => control('pause'); $('#resume').onclick = () => control('resume');
-$('#follow-resume').onclick = () => control('follow-resume'); $('#test-notifications').onclick = () => control('test-webhook');
+$('#test-notifications').onclick = () => control('test-webhook');
 $('#target-search').addEventListener('input', applyFilters);
 $$('.filter-button').forEach(button => button.onclick = () => { selectedFilter = button.dataset.filter; applyFilters(); });
 $('#clear-filters').onclick = resetFilters;
-for (const button of $$('.login,.fresh')) button.onclick = async () => {
-  const fresh = button.classList.contains('fresh');
-  if (fresh && !confirm('将清除这个专用浏览器的 Cookie 并重新打开登录窗口。现有任务与关注关系不变，是否继续？')) return;
-  try { await api('/api/login', {role: button.dataset.role, fresh}); toast('正在打开独立 Chrome 登录窗口，请扫码登录'); switchTab('accounts'); setTimeout(() => load(), 500); }
-  catch (error) { toast(error.message, true); }
+async function renameAccount(accountId, label, previousLabel) {
+  await api('/api/accounts/rename', {account_id: accountId, label, previous_label: previousLabel});
+  await load();
+  toast('账号备注已保存');
+}
+async function loginAccount(accountId, fresh) {
+  if (fresh && !confirm('将清除此账号浏览器的 Cookie 并重新扫码，请登录同一个身份。其他身份请添加新账号')) return;
+  try {
+    await api('/api/login', {account_id: accountId, fresh});
+    toast('正在打开独立 Chrome 登录窗口，请扫码登录');
+    await load();
+  } catch (error) { toast(error.message, true); }
+}
+$('#add-account').onclick = async () => {
+  const button = $('#add-account'); button.disabled = true;
+  try {
+    await api('/api/accounts', {label: $('#account-label').value.trim()});
+    $('#account-label').value = ''; await load(); toast('账号已添加，点击“登录 / 校验”扫码');
+  } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
 };
+$('#search-account-select').onchange = () => { searchAccountId = $('#search-account-select').value || null; changed(); };
+$('#save-search-account').onclick = savePeople;
+
+// Show active work on its own page; completed results expire instead of becoming a log.
+function renderJobs() {
+  for (const job of latest.jobs) {
+    if (job.status === 'running' || seenJobResults.has(job.id)) continue;
+    seenJobResults.add(job.id);
+    if (jobsInitialized) {
+      recentJobResults.set(job.scope || 'people', {job, expires: Date.now() + 8000});
+      setTimeout(renderJobs, 8100);
+    }
+  }
+  jobsInitialized = true;
+  for (const scope of ['people', 'accounts', 'settings']) {
+    const node = $('#' + scope + '-jobs'); node.replaceChildren();
+    const running = latest.jobs.find(job => job.status === 'running' && job.scope === scope);
+    const recent = recentJobResults.get(scope);
+    const job = running || (recent?.expires > Date.now() ? recent.job : null);
+    if (!job) continue;
+    const line = document.createElement('div'); line.className = 'job-feedback';
+    line.textContent = job.title + ' · ' + (job.status === 'running' ? (scope === 'accounts' ? '进行中，请查看 Chrome 窗口' : '进行中') : job.message);
+    node.append(line);
+  }
+}
 for (const slot of ['webhook', 'signing']) {
   $('#replace-' + slot).onclick = () => {
     credentialEditing[slot] = !credentialEditing[slot];

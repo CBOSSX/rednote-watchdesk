@@ -1,6 +1,6 @@
 import json
 import unittest
-from cards import notification_payload
+from rednote_watchdesk.cards import notification_payload
 
 
 class CardTests(unittest.TestCase):

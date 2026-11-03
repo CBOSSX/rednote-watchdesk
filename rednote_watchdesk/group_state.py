@@ -1,8 +1,9 @@
 """Persist one winning candidate per person while retaining per-account history."""
-from watch_config import normalize, signature
+from rednote_watchdesk.watch_config import normalize, signature
 
 def apply_people(state, config):
     plan = normalize(config)
+    state['multi_account'] = 'search_account_id' in plan
     targets = state.setdefault('targets', {})
     old_people = state.get('people', {})
     people = {}

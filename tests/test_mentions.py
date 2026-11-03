@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mentions import mention_text
-import watch
-import watchdog
+from rednote_watchdesk.mentions import mention_text
+from rednote_watchdesk import watch
+from rednote_watchdesk import watchdog
 
 
 class MentionTests(unittest.TestCase):
