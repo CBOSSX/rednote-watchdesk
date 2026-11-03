@@ -26,7 +26,7 @@ function switchTab(tab) {
   for (const name of ['people', 'accounts', 'settings']) $('#' + name + '-tab').classList.toggle('hidden', name !== tab);
   $$('.nav').forEach(node => node.classList.toggle('active', node.dataset.tab === tab));
   $('#page-title').textContent = {people: '监控目标', accounts: '登录账号', settings: '轮询与通知'}[tab];
-  $('#page-subtitle').textContent = {people: '管理候选账号、查询状态与自动关注。', accounts: '独立登录，分别保存。', settings: '让雷达按你的节奏运行。'}[tab];
+  $('#page-subtitle').textContent = {people: '管理候选账号、查询状态与自动关注', accounts: '独立登录，分别保存', settings: '让雷达按你的节奏运行'}[tab];
 }
 function readEditors() {
   // Hidden cards remain in the draft and must be included when saving a filtered list.
@@ -154,7 +154,7 @@ function renderPeople(people) {
     card.querySelector('.auto-follow').addEventListener('input', changed);
     card.querySelector('.add-candidate').onclick = () => { addCandidate(card, '', true); changed(); };
     card.querySelector('.remove').onclick = () => {
-      if (confirm('删除“' + (card.querySelector('.name').value || '未命名目标') + '”的监控配置？现有关注关系将保留。')) {
+      if (confirm('删除“' + (card.querySelector('.name').value || '未命名目标') + '”的监控配置？现有关注关系将保留')) {
         card.remove(); changed();
       }
     };
@@ -197,7 +197,7 @@ function renderNotificationFields() {
     $('#' + slot + '-editor').classList.toggle('hidden', !!saved && !editing);
     $('#replace-' + slot).textContent = editing ? '取消更换' : '更换';
     $('#' + slot).placeholder = saved ? '请输入新的' + label : slot === 'webhook' ? '请输入飞书或 Lark 自定义机器人的 Webhook 地址' : '机器人开启签名校验时，请输入签名密钥';
-    $('#' + slot + '-hint').textContent = saved ? (editing ? '填写新值后，点击下方“保存通知设置”生效。' : '已安全保存。可点击“更换”或“清除”，内容不会显示。') : slot === 'webhook' ? '首次使用请填写你自己的 Webhook 地址。' : '未开启签名校验时无需填写。';
+    $('#' + slot + '-hint').textContent = saved ? (editing ? '填写新值后，点击下方“保存通知设置”生效' : '已安全保存。可点击“更换”或“清除”，内容不会显示') : slot === 'webhook' ? '首次使用请填写你自己的 Webhook 地址' : '未开启签名校验时无需填写';
   }
   $('#clear-notifications').classList.toggle('hidden', !configured && !signed && !users.length);
   $('#test-notifications').disabled = !configured;
@@ -205,7 +205,7 @@ function renderNotificationFields() {
 }
 async function clearNotificationFields(fields) {
   const all = fields.length === 3;
-  const prompt = all ? '清除全部飞书通知配置（Webhook、签名密钥和 @ 对象）？重新配置 Webhook 前将无法发送飞书通知，待发送消息会保留。' : fields[0] === 'webhook_url' ? '清除已保存的 Webhook 地址？重新配置前将无法发送飞书通知，待发送消息会保留。' : '清除已保存的签名密钥？如果机器人仍启用签名校验，消息可能发送失败。';
+  const prompt = all ? '清除全部飞书通知配置（Webhook、签名密钥和 @ 对象）？重新配置 Webhook 前将无法发送飞书通知，待发送消息会保留' : fields[0] === 'webhook_url' ? '清除已保存的 Webhook 地址？重新配置前将无法发送飞书通知，待发送消息会保留' : '清除已保存的签名密钥？如果机器人仍启用签名校验，消息可能发送失败';
   if (!confirm(prompt)) return;
   try {
     await api('/api/notifications/clear', {fields});
@@ -225,10 +225,10 @@ function renderStatus() {
   $('#follow-resume').classList.toggle('hidden', !state.follow_paused);
   $('#last-run').textContent = state.heartbeat_at ? new Date(state.heartbeat_at * 1000).toLocaleTimeString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '尚未运行';
   const messages = [];
-  if (latest.pending_apply) messages.push('配置已保存，后台将在当前轮次结束后应用。');
-  if (state.worker_fault) messages.push('后台运行异常，请检查本机网络和日志。');
-  if (state.follow_paused) messages.push('大号自动关注已暂停，请前往“登录账号”处理后恢复。');
-  if (state.pending_notifications) messages.push('有通知等待发送；请检查飞书配置和网络。');
+  if (latest.pending_apply) messages.push('配置已保存，后台将在当前轮次结束后应用');
+  if (state.worker_fault) messages.push('后台运行异常，请检查本机网络和日志');
+  if (state.follow_paused) messages.push('大号自动关注已暂停，请前往“登录账号”处理后恢复');
+  if (state.pending_notifications) messages.push('有通知等待发送；请检查飞书配置和网络');
   $('#banner').classList.toggle('hidden', messages.length === 0); $('#banner').textContent = messages.join(' ');
   for (const role of ['search', 'follow']) {
     const account = latest.accounts[role], node = $('#' + role + '-account'); node.replaceChildren();
