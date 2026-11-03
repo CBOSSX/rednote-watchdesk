@@ -24,7 +24,7 @@ async function api(path, body) {
 function switchTab(tab) {
   for (const name of ['people', 'accounts', 'settings']) $('#' + name + '-tab').classList.toggle('hidden', name !== tab);
   $$('.nav').forEach(node => node.classList.toggle('active', node.dataset.tab === tab));
-  $('#page-title').textContent = {people: '监控候选管理', accounts: '登录账号', settings: '轮询与通知'}[tab];
+  $('#page-title').textContent = {people: '监控目标', accounts: '登录账号', settings: '轮询与通知'}[tab];
   $('#page-subtitle').textContent = {people: '管理候选账号、查询状态与自动关注。', accounts: '独立登录，分别保存。', settings: '让雷达按你的节奏运行。'}[tab];
 }
 function readEditors() {
