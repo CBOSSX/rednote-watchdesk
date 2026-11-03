@@ -111,21 +111,47 @@ def save_config(body):
     wake()
 
 
+@contextmanager
+def notification_lock():
+    with (RUNTIME/'data/notifications.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def save_notifications(body):
-    current = read(RUNTIME/'secrets.json')
-    url = body.get('webhook_url','').strip()
+    url = body.get('webhook_url', '')
+    signing = body.get('signing_secret', '')
+    if not isinstance(url, str) or not isinstance(signing, str):
+        raise ValueError('Webhook 和签名密钥必须是文本')
+    url = url.strip()
     if url:
         parts = urllib.parse.urlsplit(url)
         if parts.scheme!='https' or parts.hostname not in ('open.larkoffice.com','open.feishu.cn','open.larksuite.com') or not parts.path.startswith('/open-apis/bot/v2/hook/') or parts.username or parts.password:
             raise ValueError('请填写飞书/Lark 官方自定义机器人 HTTPS webhook')
-        current['webhook_url'] = url
-    if body.get('signing_secret'):
-        current['signing_secret'] = body['signing_secret']
-    users = body.get('mention_users',[])
     from mentions import mention_tags
-    mention_tags({'mention_users':users},card=True)
-    current['mention_users'] = users
-    write(RUNTIME/'secrets.json',current)
+    with notification_lock():
+        current = read(RUNTIME/'secrets.json')
+        users = body.get('mention_users', current.get('mention_users', []))
+        mention_tags({'mention_users':users}, card=True)
+        if url:
+            current['webhook_url'] = url
+        if signing:
+            current['signing_secret'] = signing
+        current['mention_users'] = users
+        write(RUNTIME/'secrets.json', current)
+    wake()
+
+
+def clear_notifications(body):
+    fields = body.get('fields')
+    allowed = {'webhook_url', 'signing_secret', 'mention_users'}
+    if not isinstance(fields, list) or not fields or any(not isinstance(f, str) or f not in allowed for f in fields):
+        raise ValueError('请选择要清除的通知配置')
+    with notification_lock():
+        current = read(RUNTIME/'secrets.json')
+        for field in fields:
+            current.pop(field, None)
+        write(RUNTIME/'secrets.json', current)
     wake()
 
 
@@ -197,6 +223,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body,dict):raise ValueError('请求必须是对象')
             if self.path=='/api/config':save_config(body);return self.respond(200,{'ok':True})
             if self.path=='/api/notifications':save_notifications(body);return self.respond(200,{'ok':True})
+            if self.path=='/api/notifications/clear':clear_notifications(body);return self.respond(200,{'ok':True})
             if self.path=='/api/login':
                 role=body.get('role')
                 if role not in ('search','follow'):raise ValueError('登录角色无效')

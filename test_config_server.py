@@ -47,3 +47,38 @@ class ServerTests(unittest.TestCase):
    code,_=self.request('/api/notifications',{'webhook_url':'','mention_users':[{'name':'Alice','user_id':'ou_example'}]})
    self.assertEqual(code,200);self.assertIn('PRIVATE_TEST_VALUE',server.read(self.root/'secrets.json')['webhook_url'])
    code,_=self.request('/api/notifications',{'webhook_url':'https://evil.example','mention_users':[]});self.assertEqual(code,400)
+ def test_clear_webhook_preserves_other_notification_settings(self):
+  with patch.object(server,'wake'):
+   code,_=self.request('/api/notifications/clear',{'fields':['webhook_url']})
+  self.assertEqual(code,200)
+  saved=server.read(self.root/'secrets.json')
+  self.assertNotIn('webhook_url',saved);self.assertEqual(saved['signing_secret'],'PRIVATE_SIGNING_VALUE')
+  code,data=self.request('/api/state');state=json.loads(data)
+  self.assertFalse(state['notifications']['configured']);self.assertTrue(state['notifications']['signing_configured'])
+ def test_clear_signing_preserves_webhook(self):
+  with patch.object(server,'wake'):
+   code,_=self.request('/api/notifications/clear',{'fields':['signing_secret']})
+  self.assertEqual(code,200);saved=server.read(self.root/'secrets.json')
+  self.assertNotIn('signing_secret',saved);self.assertIn('PRIVATE_TEST_VALUE',saved['webhook_url'])
+ def test_clear_all_removes_only_notification_fields(self):
+  saved=server.read(self.root/'secrets.json');saved['other_setting']='keep';saved['mention_users']=[{'name':'Alice','user_id':'ou_example'}]
+  server.write(self.root/'secrets.json',saved)
+  config_before=(self.root/'config.json').read_bytes();state_before=(self.root/'data/state.json').read_bytes()
+  with patch.object(server,'wake'):
+   code,_=self.request('/api/notifications/clear',{'fields':['webhook_url','signing_secret','mention_users']})
+  self.assertEqual(code,200);self.assertEqual(server.read(self.root/'secrets.json'),{'other_setting':'keep'})
+  self.assertEqual((self.root/'config.json').read_bytes(),config_before)
+  self.assertEqual((self.root/'data/state.json').read_bytes(),state_before)
+  self.assertEqual((self.root/'secrets.json').stat().st_mode & 0o777,0o600)
+ def test_clear_requires_valid_scope_and_csrf(self):
+  original=(self.root/'secrets.json').read_bytes()
+  for fields in [[],['config'],['webhook_url',{}],'webhook_url']:
+   self.assertEqual(self.request('/api/notifications/clear',{'fields':fields})[0],400)
+  self.assertEqual(self.request('/api/notifications/clear',{'fields':['webhook_url']},**{'X-CSRF-Token':''})[0],403)
+  self.assertEqual((self.root/'secrets.json').read_bytes(),original)
+ def test_partial_save_after_clear_does_not_resurrect_secret(self):
+  with patch.object(server,'wake'):
+   self.assertEqual(self.request('/api/notifications/clear',{'fields':['webhook_url']})[0],200)
+   self.assertEqual(self.request('/api/notifications',{'mention_users':[{'name':'Alice','user_id':'ou_example'}]})[0],200)
+  saved=server.read(self.root/'secrets.json')
+  self.assertNotIn('webhook_url',saved);self.assertEqual(saved['mention_users'][0]['name'],'Alice')

@@ -186,3 +186,14 @@ footer span { margin: 0 8px; }
   .filter-button { font-size: 11px; padding: 7px 8px; }
   .filter-count { margin-left: 2px; }
 }
+.notification-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.notification-heading + p { margin-top: 0; }
+.notification-heading .link-button { padding: 0; font-size: 11px; white-space: nowrap; }
+.saved-credential { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 9px; padding: 12px 14px; border: 1px solid #e2e9e5; border-radius: 8px; background: #f8fbf9; }
+.saved-credential-value { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; color: #527765; font-size: 12px; }
+.credential-check { color: #509371; }
+.credential-mask { color: #adb8b1; letter-spacing: 2px; font-size: 10px; }
+.credential-actions { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+.credential-actions .link-button { padding: 0; font-size: 11px; color: #5a7868; }
+.link-button.danger-text { color: #bb6370; }
+@media (max-width: 560px) { .credential-mask { display: none; } .saved-credential { gap: 10px; padding: 12px; } .credential-actions { gap: 12px; } }

@@ -3,6 +3,7 @@ const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
 let latest = null, dirty = false, version = '', toastTimer, selectedFilter = 'all';
+const credentialEditing = {webhook: false, signing: false};
 const time = value => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '尚未运行';
 
 function toast(message, error = false) {
@@ -187,14 +188,34 @@ function renderStatuses() {
   applyFilters();
 }
 function renderNotificationFields() {
-  const {configured, signing_configured: signed} = latest.notifications;
-  $('#webhook-status').textContent = configured ? '已配置' : '未配置';
-  $('#webhook').placeholder = configured ? '输入新的 Webhook 地址以更换' : '请输入飞书或 Lark 自定义机器人的 Webhook 地址';
-  $('#webhook-hint').textContent = configured ? 'Webhook 已保存；留空保存表示继续使用当前地址。' : '首次使用请填写你自己的 Webhook 地址。';
-  $('#signing-status').textContent = signed ? '已配置' : '未配置';
-  $('#signing').placeholder = signed ? '输入新的签名密钥以更换' : '机器人开启签名校验时，请输入签名密钥';
-  $('#signing-hint').textContent = signed ? '签名密钥已保存；留空保存表示不更换。' : '未开启签名校验时无需填写。';
+  const {configured, signing_configured: signed, mention_users: users} = latest.notifications;
+  for (const [slot, saved, label] of [['webhook', configured, 'Webhook 地址'], ['signing', signed, '签名密钥']]) {
+    if (!saved) credentialEditing[slot] = false;
+    const editing = credentialEditing[slot];
+    $('#' + slot + '-status').textContent = saved ? '已配置' : '未配置';
+    $('#' + slot + '-saved').classList.toggle('hidden', !saved);
+    $('#' + slot + '-editor').classList.toggle('hidden', !!saved && !editing);
+    $('#replace-' + slot).textContent = editing ? '取消更换' : '更换';
+    $('#' + slot).placeholder = saved ? '请输入新的' + label : slot === 'webhook' ? '请输入飞书或 Lark 自定义机器人的 Webhook 地址' : '机器人开启签名校验时，请输入签名密钥';
+    $('#' + slot + '-hint').textContent = saved ? (editing ? '填写新值后，点击下方“保存通知设置”生效。' : '已安全保存。可点击“更换”或“清除”，内容不会显示。') : slot === 'webhook' ? '首次使用请填写你自己的 Webhook 地址。' : '未开启签名校验时无需填写。';
+  }
+  $('#clear-notifications').classList.toggle('hidden', !configured && !signed && !users.length);
+  $('#test-notifications').disabled = !configured;
+  $('#test-notifications').title = configured ? '' : '请先配置 Webhook';
 }
+async function clearNotificationFields(fields) {
+  const all = fields.length === 3;
+  const prompt = all ? '清除全部飞书通知配置（Webhook、签名密钥和 @ 对象）？重新配置 Webhook 前将无法发送飞书通知，待发送消息会保留。' : fields[0] === 'webhook_url' ? '清除已保存的 Webhook 地址？重新配置前将无法发送飞书通知，待发送消息会保留。' : '清除已保存的签名密钥？如果机器人仍启用签名校验，消息可能发送失败。';
+  if (!confirm(prompt)) return;
+  try {
+    await api('/api/notifications/clear', {fields});
+    if (fields.includes('webhook_url')) { $('#webhook').value = ''; credentialEditing.webhook = false; }
+    if (fields.includes('signing_secret')) { $('#signing').value = ''; credentialEditing.signing = false; }
+    if (fields.includes('mention_users')) $('#mentions').value = '';
+    await load(); toast(all ? '通知配置已清除' : '已清除所选配置');
+  } catch (error) { toast(error.message, true); }
+}
+
 function renderStatus() {
   renderNotificationFields();
   const state = latest.state, badge = $('#global-status'); badge.className = 'pill';
@@ -267,14 +288,34 @@ for (const button of $$('.login,.fresh')) button.onclick = async () => {
   try { await api('/api/login', {role: button.dataset.role, fresh}); toast('正在打开独立 Chrome 登录窗口，请扫码登录'); switchTab('accounts'); setTimeout(() => load(), 500); }
   catch (error) { toast(error.message, true); }
 };
+for (const slot of ['webhook', 'signing']) {
+  $('#replace-' + slot).onclick = () => {
+    credentialEditing[slot] = !credentialEditing[slot];
+    if (!credentialEditing[slot]) $('#' + slot).value = '';
+    renderNotificationFields();
+    if (credentialEditing[slot]) $('#' + slot).focus();
+  };
+}
+$('#clear-webhook').onclick = () => clearNotificationFields(['webhook_url']);
+$('#clear-signing').onclick = () => clearNotificationFields(['signing_secret']);
+$('#clear-notifications').onclick = () => clearNotificationFields(['webhook_url', 'signing_secret', 'mention_users']);
 $('#save-notifications').onclick = async () => {
   try {
     const users = $('#mentions').value.split('\n').filter(line => line.trim()).map(line => {
       const parts = line.split(/[,，]/); if (parts.length !== 2) throw Error('@ 对象请按“显示名,Open ID”填写');
       return {name: parts[0].trim(), user_id: parts[1].trim()};
     });
-    await api('/api/notifications', {webhook_url: $('#webhook').value, signing_secret: $('#signing').value, mention_users: users});
-    $('#webhook').value = ''; $('#signing').value = ''; toast('通知设置已保存'); await load();
+    const values = {mention_users: users};
+    for (const [slot, key] of [['webhook', 'webhook_url'], ['signing', 'signing_secret']]) {
+      const saved = slot === 'webhook' ? latest.notifications.configured : latest.notifications.signing_configured;
+      const value = $('#' + slot).value.trim();
+      if (saved && credentialEditing[slot] && !value) throw Error('请填写新的' + (slot === 'webhook' ? ' Webhook 地址' : '签名密钥') + '，或取消更换');
+      if (!saved || credentialEditing[slot]) values[key] = value;
+    }
+    await api('/api/notifications', values);
+    $('#webhook').value = ''; $('#signing').value = '';
+    credentialEditing.webhook = false; credentialEditing.signing = false;
+    toast('通知设置已保存'); await load();
   } catch (error) { toast(error.message, true); }
 };
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
