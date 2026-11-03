@@ -15,7 +15,7 @@ def normalize(config):
     if 'people' in config:
         people = config['people']
         if not isinstance(people, list) or len(people) > 10:
-            raise ValueError('人物列表最多支持 10 人')
+            raise ValueError('监控目标列表最多支持 10 组')
     else:
         candidates = config.get('targets') or ([config['target']] if config.get('target') else [])
         if not isinstance(candidates, list):
@@ -28,13 +28,13 @@ def normalize(config):
     result, ids, owners = [], set(), {}
     for person in people:
         if not isinstance(person, dict):
-            raise ValueError('每个人物必须是对象')
+            raise ValueError('每个目标配置必须是对象')
         pid, name = person.get('id'), person.get('name')
         candidates, follow = person.get('candidates'), person.get('auto_follow', False)
         if not isinstance(pid, str) or not PERSON_ID.fullmatch(pid) or pid in ids:
-            raise ValueError('人物 id 必须唯一，只能包含字母、数字、下划线或连字符')
+            raise ValueError('目标 id 必须唯一，只能包含字母、数字、下划线或连字符')
         if not isinstance(name, str) or not name.strip() or len(name) > 80:
-            raise ValueError('请填写 1–80 字的人物名称')
+            raise ValueError('请填写 1–80 字的目标名称')
         if not isinstance(candidates, list) or not candidates or len(candidates) > 10:
             raise ValueError(name+'：请填写 1–10 个候选小红书号')
         if type(follow) is not bool:
@@ -49,7 +49,7 @@ def normalize(config):
         ids.add(pid)
         result.append({'id': pid, 'name': name.strip(), 'candidates': list(candidates), 'auto_follow': follow})
     if len(owners) > 10:
-        raise ValueError('全部人物合计最多支持 10 个候选账号')
+        raise ValueError('全部分组合计最多支持 10 个候选账号')
     return {'interval_seconds': interval, 'people': result}
 
 def targets(config):

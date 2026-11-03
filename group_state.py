@@ -20,7 +20,7 @@ def apply_people(state, config):
         if winner:
             winner = next((t for t in candidates if t.casefold()==winner.casefold()), None)
             if winner is None:
-                raise ValueError(person['name']+' 已命中 '+old['matched_target']+'；请保留该候选，或新建人物任务')
+                raise ValueError(person['name']+' 已命中 '+old['matched_target']+'；请保留该候选，或新建监控任务')
         if not winner:
             winner = next((t for t in candidates if targets[t].get('found')), None)
         people[pid] = dict(person, matched_target=winner)

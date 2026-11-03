@@ -73,7 +73,7 @@ def notification_payload(text, secret, event=None, source='monitor'):
     info = [markdown("<font color='grey'>监听账号</font>\n" +
                      ('\n'.join(safe_text(t) for t in targets) if targets else '当前配置的目标账号'))]
     if event.get('person_name'):
-        info.insert(0, markdown("<font color='grey'>人物</font>\n" + safe_text(event['person_name'])))
+        info.insert(0, markdown("<font color='grey'>监控目标</font>\n" + safe_text(event['person_name'])))
     result = event.get('result') or {}
     url = result.get('url', '')
     if kind in ('found', 'follow_success', 'follow_failure'):
