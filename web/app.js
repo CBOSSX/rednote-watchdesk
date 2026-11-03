@@ -186,7 +186,17 @@ function renderStatuses() {
   }
   applyFilters();
 }
+function renderNotificationFields() {
+  const {configured, signing_configured: signed} = latest.notifications;
+  $('#webhook-status').textContent = configured ? '已配置' : '未配置';
+  $('#webhook').placeholder = configured ? '输入新的 Webhook 地址以更换' : '请输入飞书或 Lark 自定义机器人的 Webhook 地址';
+  $('#webhook-hint').textContent = configured ? 'Webhook 已保存；留空保存表示继续使用当前地址。' : '首次使用请填写你自己的 Webhook 地址。';
+  $('#signing-status').textContent = signed ? '已配置' : '未配置';
+  $('#signing').placeholder = signed ? '输入新的签名密钥以更换' : '机器人开启签名校验时，请输入签名密钥';
+  $('#signing-hint').textContent = signed ? '签名密钥已保存；留空保存表示不更换。' : '未开启签名校验时无需填写。';
+}
 function renderStatus() {
+  renderNotificationFields();
   const state = latest.state, badge = $('#global-status'); badge.className = 'pill';
   badge.textContent = latest.config.people.length === 0 ? '等待配置' : latest.pending_apply ? '配置待应用' : state.paused ? '监测已暂停' : state.completed ? '全部已完成' : '监测已开启';
   badge.classList.toggle('green', !state.paused && !latest.pending_apply);
@@ -220,7 +230,6 @@ async function load(initial = false) {
     if (initial) {
       version = latest.version; $('#interval').value = latest.config.interval_seconds / 60;
       renderPeople(latest.config.people);
-      $('#webhook-status').textContent = latest.notifications.configured ? '已设置，留空不修改' : '尚未设置';
       $('#mentions').value = latest.notifications.mention_users.map(user => user.name + ',' + user.user_id).join('\n');
     }
     renderStatus();
@@ -266,7 +275,6 @@ $('#save-notifications').onclick = async () => {
     });
     await api('/api/notifications', {webhook_url: $('#webhook').value, signing_secret: $('#signing').value, mention_users: users});
     $('#webhook').value = ''; $('#signing').value = ''; toast('通知设置已保存'); await load();
-    $('#webhook-status').textContent = latest.notifications.configured ? '已设置，留空不修改' : '尚未设置';
   } catch (error) { toast(error.message, true); }
 };
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
