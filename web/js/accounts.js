@@ -1,6 +1,15 @@
 import {layoutChange, reveal, setVisible} from './motion.js';
 const $ = selector => document.querySelector(selector);
 export const accountName = account => account?.name || account?.label || '未登录账号';
+const initials = new Intl.Segmenter('zh-CN', {granularity: 'grapheme'});
+
+function renderAccountIcon(icon, account) {
+  icon.textContent = [...initials.segment((account.label || '').trim())][0]?.segment || '?';
+  // Use the stable identity so renaming, sorting and reloading keep the same color.
+  let hash = 2166136261;
+  for (const character of account.id) hash = Math.imul(hash ^ character.codePointAt(0), 16777619) >>> 0;
+  icon.dataset.tone = hash % 6;
+}
 
 function accountChoiceLabel(account) {
   const text = document.createElement('span'); text.className = 'choice-label';
@@ -184,6 +193,7 @@ export function renderAccounts(accounts, busy, {login, resume, rename}) {
         list.append(card);
       }
       card.querySelector('.account-label-text').textContent = account.label;
+      renderAccountIcon(card.querySelector('.account-icon'), account);
       card.querySelector('.rename-account').onclick = () => rename(account);
       card.querySelector('.rename-account').setAttribute('aria-label', '修改 ' + account.label + ' 的备注');
       const role = card.querySelector('.account-role');

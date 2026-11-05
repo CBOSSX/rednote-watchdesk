@@ -109,8 +109,12 @@ p { color: var(--muted); line-height: 1.7; margin: 0; }
 .intro { margin-bottom: 26px; }
 .intro p { font-size: 13px; }
 .account-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
-.account-icon { display: grid; place-items: center; background: #edf4ff; color: #5a85bd; width: 44px; height: 44px; border-radius: 13px; margin-bottom: 22px; font-size: 17px; font-weight: 600; }
-.account-icon.big { background: #fff0f4; color: #c3627c; }
+.account-icon { display: grid; place-items: center; flex: 0 0 44px; background: #edf4ff; color: #496fa4; width: 44px; height: 44px; border-radius: 13px; font-size: 17px; font-weight: 600; }
+.account-icon[data-tone="1"] { background: #f2edfb; color: #7957a6; }
+.account-icon[data-tone="2"] { background: #eaf5f2; color: #397e6c; }
+.account-icon[data-tone="3"] { background: #fff2e5; color: #99652d; }
+.account-icon[data-tone="4"] { background: #fceef2; color: #ab536f; }
+.account-icon[data-tone="5"] { background: #eaf4f8; color: #3b778d; }
 .account-info { min-height: 76px; margin-bottom: 20px; color: #6c7584; font-size: 13px; line-height: 1.9; }
 .account-info strong { color: #303845; }
 .account-info small { display: block; color: #a0a4af; }
@@ -233,8 +237,8 @@ p { color: var(--muted); line-height: 1.7; margin: 0; }
 .choice-label { min-width: 0; overflow-wrap: anywhere; }
 .choice-label strong { display: block; font-weight: 600; font-size: 13px; }
 .choice-label small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
-.account-label-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.account-label-heading h2 { min-width: 0; overflow-wrap: anywhere; }
+.account-label-heading { display: flex; flex: 1; min-width: 0; flex-direction: column; align-items: flex-start; gap: 6px; }
+.account-label-heading h2 { margin: 0; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .account-label-heading .rename-account { padding: 0; flex-shrink: 0; color: var(--pink); }
 .editor-dialog { padding: 0; width: min(480px, calc(100% - 32px)); max-height: calc(100dvh - 40px); overflow: auto; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 80px #23263230; }
 .editor-dialog::backdrop { background: #252c3b66; }
