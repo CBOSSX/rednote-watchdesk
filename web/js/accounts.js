@@ -2,6 +2,15 @@ import {layoutChange, reveal, setVisible} from './motion.js';
 const $ = selector => document.querySelector(selector);
 export const accountName = account => account?.name || account?.label || '未登录账号';
 
+function accountChoiceLabel(account) {
+  const text = document.createElement('span'); text.className = 'choice-label';
+  const name = document.createElement('strong'); name.textContent = account.label;
+  const detail = document.createElement('small');
+  detail.textContent = account.ready ? accountName(account) + (account.red_id ? ' · ' + account.red_id : '') : '尚未登录';
+  text.append(name, detail);
+  return text;
+}
+
 function updateFollowerSummary(card) {
   const count = card.querySelectorAll('.follow-account:checked').length;
   card.querySelector('.selected-follow-count').textContent = count ? count + ' 个账号' : '仅通知';
@@ -31,13 +40,10 @@ export function renderFollowerOptions(card, accounts, selected, onChange) {
       const empty = document.createElement('p'); empty.textContent = '还没有可选账号，请先到“登录账号”添加'; options.append(empty);
     }
     for (const account of accounts) {
-      const row = document.createElement('label'); row.className = 'follow-account-choice';
+      const row = document.createElement('label'); row.className = 'account-choice';
       const input = document.createElement('input'); input.type = 'checkbox'; input.value = account.id;
       input.checked = [...list.querySelectorAll('input:checked')].some(node => node.value === account.id);
-      const text = document.createElement('span'); text.className = 'choice-label';
-      const name = document.createElement('strong'); name.textContent = account.label;
-      const detail = document.createElement('small'); detail.textContent = account.ready ? accountName(account) + (account.red_id ? ' · ' + account.red_id : '') : '尚未登录';
-      text.append(name, detail); row.append(input, text); options.append(row);
+      row.append(input, accountChoiceLabel(account)); options.append(row);
     }
     $('#close-follow-dialog').onclick = $('#cancel-follow-dialog').onclick = () => dialog.close();
     $('#apply-follow-dialog').onclick = () => {
@@ -81,17 +87,90 @@ export function editAccountLabel(account, save) {
   dialog.showModal(); input.select(); reveal(dialog, 8);
 }
 
-export function renderAccounts(accounts, selectedSearch, busy, {login, resume, rename}) {
-  const select = $('#search-account-select');
-  const signature = JSON.stringify(accounts.map(a => [a.id, a.label, a.name, a.ready]));
-  if (select.dataset.accounts !== signature) {
-    select.dataset.accounts = signature;
-    select.replaceChildren(new Option('请选择搜索账号', ''));
-    for (const account of accounts) {
-      select.append(new Option(accountName(account) + ' · ' + account.label + (account.ready ? '' : '（待登录）'), account.id));
+const searchProblems = {
+  login_required: '登录已失效',
+  search_account_not_ready: '尚未登录',
+  search_account_mismatch: '登录身份不一致',
+  ip_risk: '网络存在风险',
+  risk_control: '平台要求安全验证',
+  http_403: '平台拒绝访问',
+  http_429: '平台限制访问频率',
+};
+
+export function renderSearchAccounts(accounts, selected, state, onChange) {
+  const list = $('#search-account-order');
+  const add = $('#add-search-account');
+  const active = state.active_search_account_id, errors = state.search_account_errors || {};
+  const byId = new Map(accounts.map(account => [account.id, account]));
+  const stopped = state.paused || state.completed;
+  const signature = JSON.stringify([accounts.map(a => [a.id, a.label, a.name, a.ready, a.red_id]), selected, active, errors, stopped]);
+  if (list.dataset.signature === signature) return;
+  list.dataset.signature = signature;
+  add.onclick = () => {
+    const dialog = $('#search-account-dialog'), options = $('#search-account-dialog-options');
+    const confirm = $('#confirm-search-account-dialog');
+    const available = accounts.filter(account => !selected.includes(account.id));
+    options.replaceChildren();
+    if (!available.length) {
+      const empty = document.createElement('p');
+      empty.textContent = accounts.length ? '所有账号都已加入搜索顺序' : '请先在上方添加账号';
+      options.append(empty);
     }
-  }
-  select.value = selectedSearch || '';
+    for (const account of available) {
+      const row = document.createElement('label'); row.className = 'account-choice';
+      const input = document.createElement('input');
+      input.type = 'checkbox'; input.value = account.id;
+      row.append(input, accountChoiceLabel(account));
+      options.append(row);
+    }
+    confirm.disabled = true;
+    options.onchange = () => { confirm.disabled = !options.querySelector('input:checked'); };
+    confirm.onclick = () => {
+      const choices = [...options.querySelectorAll('input:checked')].map(input => input.value);
+      if (!choices.length) return;
+      dialog.close();
+      onChange([...selected, ...choices]);
+    };
+    $('#close-search-account-dialog').onclick = $('#cancel-search-account-dialog').onclick = () => dialog.close();
+    dialog.showModal();
+    reveal(dialog, 8);
+  };
+
+  list.replaceChildren();
+  selected.forEach((id, index) => {
+    const account = byId.get(id);
+    const row = document.createElement('li'); row.className = 'search-account-item';
+    const label = document.createElement('div'); label.className = 'choice-label';
+    const name = document.createElement('strong');
+    const accountLabel = account?.label || '未知账号';
+    name.textContent = (index + 1) + ' · ' + accountLabel;
+    const status = document.createElement('small');
+    const problem = errors[id];
+    status.textContent = id === active ? (stopped ? '上次使用' : '当前使用') : problem ? searchProblems[problem] || '上次搜索异常' :
+      !account?.ready ? '待登录' : index === 0 ? '首选' : '备用';
+    label.append(name, status);
+    const controls = document.createElement('div'); controls.className = 'row';
+    for (const [buttonIndex, [action, offset]] of [['上移', -1], ['下移', 1], ['移除', 0]].entries()) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'button quiet'; button.textContent = action;
+      button.setAttribute('aria-label', action + ' ' + accountLabel);
+      const position = index + offset;
+      button.disabled = position < 0 || position >= selected.length;
+      button.onclick = () => {
+        const order = selected.slice();
+        order.splice(index, 1);
+        if (offset) order.splice(position, 0, id);
+        onChange(order);
+        const next = offset && list.children[position].querySelectorAll('button')[buttonIndex];
+        (next && !next.disabled ? next : $('#save-search-account')).focus();
+      };
+      controls.append(button);
+    }
+    row.append(label, controls); list.append(row);
+  });
+}
+
+export function renderAccounts(accounts, busy, {login, resume, rename}) {
   const list = $('#accounts-list');
   layoutChange(list, () => {
     for (const account of accounts) {
@@ -108,7 +187,7 @@ export function renderAccounts(accounts, selectedSearch, busy, {login, resume, r
       card.querySelector('.rename-account').onclick = () => rename(account);
       card.querySelector('.rename-account').setAttribute('aria-label', '修改 ' + account.label + ' 的备注');
       const role = card.querySelector('.account-role');
-      role.textContent = account.follow_paused ? '关注已暂停' : account.follow_needs_resume ? '关注需处理' : selectedSearch === account.id ? '用于搜索' : account.ready ? '已登录' : '待登录';
+      role.textContent = account.follow_paused ? '关注已暂停' : account.follow_needs_resume ? '关注需处理' : account.ready ? '已登录' : '待登录';
       role.className = 'account-role pill ' + (account.follow_needs_resume ? 'orange' : account.ready ? 'green' : '');
       const info = card.querySelector('.account-info');
       info.replaceChildren();

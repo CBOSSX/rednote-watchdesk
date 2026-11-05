@@ -47,11 +47,11 @@ def demo_state():
          'follow_jobs': [{'account_id': 'demo_work', 'status': 'succeeded'}]},
     ]
     return {
-        'config': {'interval_seconds': 1800, 'search_account_id': 'demo_daily', 'people': people},
+        'config': {'interval_seconds': 1800, 'search_account_ids': ['demo_daily', 'demo_work'], 'people': people},
         'version': 'synthetic-demo-version', 'pending_apply': False,
         'state': {'people': rows, 'paused': False, 'completed': False, 'follow_paused': False,
                   'heartbeat_at': datetime.datetime.fromisoformat('2026-11-03T10:00:00+00:00').timestamp(),
-                  'pending_notifications': False},
+                  'pending_notifications': False, 'active_search_account_id': 'demo_daily'},
         'accounts': actors, 'jobs': [],
         'notifications': {'configured': False, 'signing_configured': False, 'mention_users': []},
     }

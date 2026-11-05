@@ -5,6 +5,8 @@ import re
 
 RED_ID = re.compile(r'[A-Za-z0-9_-]{3,40}')
 PERSON_ID = re.compile(r'[A-Za-z0-9_-]{1,64}')
+MAX_SEARCH_ACCOUNTS = 20
+SEARCH_ACCOUNT_FIELDS = {'search_account_ids', 'search_account_id'}
 
 def normalize(config):
     if not isinstance(config, dict):
@@ -25,10 +27,13 @@ def normalize(config):
         if type(enabled) is not bool or not isinstance(allowed, list) or any(t not in candidates for t in allowed):
             raise ValueError('自动关注名单必须是监听目标的子集')
         people = [{'id': 'account_'+str(t).lower(), 'name': t, 'candidates': [t], 'auto_follow': t in allowed} for t in candidates]
-    multi = 'search_account_id' in config or any(isinstance(p, dict) and 'follow_account_ids' in p for p in people)
+    multi = bool(SEARCH_ACCOUNT_FIELDS & config.keys()) or any(isinstance(p, dict) and 'follow_account_ids' in p for p in people)
     search_account = config.get('search_account_id')
-    if multi and search_account is not None and (not isinstance(search_account, str) or not PERSON_ID.fullmatch(search_account)):
-        raise ValueError('搜索账号标识无效')
+    search_accounts = config.get('search_account_ids', [] if search_account is None else [search_account])
+    if (not isinstance(search_accounts, list) or len(search_accounts) > MAX_SEARCH_ACCOUNTS
+            or any(not isinstance(a, str) or not PERSON_ID.fullmatch(a) for a in search_accounts)
+            or len(set(search_accounts)) != len(search_accounts)):
+        raise ValueError('搜索账号列表最多支持 20 个账号，标识必须唯一且有效')
     result, ids, owners = [], set(), {}
     for person in people:
         if not isinstance(person, dict):
@@ -65,7 +70,7 @@ def normalize(config):
         raise ValueError('全部分组合计最多支持 10 个候选账号')
     plan = {'interval_seconds': interval, 'people': result}
     if multi:
-        plan['search_account_id'] = search_account
+        plan['search_account_ids'] = list(search_accounts)
     return plan
 
 def targets(config):

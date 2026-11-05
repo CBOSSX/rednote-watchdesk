@@ -1,6 +1,6 @@
 {
   "interval_seconds": 1800,
-  "search_account_id": "acct_example_search",
+  "search_account_ids": ["acct_example_search", "acct_example_backup"],
   "people": [
     {
       "id": "person_alice",

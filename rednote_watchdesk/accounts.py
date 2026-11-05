@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import uuid
+from rednote_watchdesk.watch_config import MAX_SEARCH_ACCOUNTS, SEARCH_ACCOUNT_FIELDS, normalize
 
 LEGACY_SEARCH = 'legacy_search'
 LEGACY_FOLLOW = 'legacy_follow'
@@ -44,7 +45,7 @@ def list_accounts(data):
     registry = read(data/'accounts.json').get('accounts', [])
     result = list(registry)
     config = read(data.parent/'config.json')
-    legacy_config = 'search_account_id' not in config and bool(config.get('people') or config.get('targets') or config.get('target'))
+    legacy_config = not SEARCH_ACCOUNT_FIELDS & config.keys() and bool(config.get('people') or config.get('targets') or config.get('target'))
     for aid, label in [(LEGACY_SEARCH, '原搜索账号'), (LEGACY_FOLLOW, '原关注账号')]:
         identity, profile, _ = account_paths(data, aid)
         if (legacy_config or identity.exists() or profile.exists()) and not any(a['id'] == aid for a in result):
@@ -72,7 +73,7 @@ def create_account(data, label):
     with (data/'accounts.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         current = list_accounts(data)
-        if len(current) >= 20:
+        if len(current) >= MAX_SEARCH_ACCOUNTS:
             raise ValueError('最多保存 20 个账号')
         account = {'id': 'acct_' + uuid.uuid4().hex, 'label': label.strip()}
         # Persist legacy slots too, including slots whose identity is not enrolled yet.
@@ -104,12 +105,11 @@ def persist_registry(data):
 
 
 def ui_config(config, data):
-    from rednote_watchdesk.watch_config import normalize
     plan = normalize(config)
-    if 'search_account_id' in plan:
+    if 'search_account_ids' in plan:
         return plan
     available = {a['id'] for a in list_accounts(data)}
-    plan['search_account_id'] = LEGACY_SEARCH if LEGACY_SEARCH in available else None
+    plan['search_account_ids'] = [LEGACY_SEARCH] if LEGACY_SEARCH in available else []
     for person in plan['people']:
         person['follow_account_ids'] = [LEGACY_FOLLOW] if person['auto_follow'] else []
     return plan
@@ -117,11 +117,11 @@ def ui_config(config, data):
 
 def validate_selection(config, data):
     ids = {a['id'] for a in list_accounts(data)}
-    selected = config.get('search_account_id')
-    if selected is not None and selected not in ids:
+    selected = config['search_account_ids']
+    if any(aid not in ids for aid in selected):
         raise ValueError('所选搜索账号不存在')
-    if config['people'] and selected is None:
-        raise ValueError('请先选择用于搜索的账号')
+    if config['people'] and not selected:
+        raise ValueError('请至少选择一个用于搜索的账号')
     for person in config['people']:
         if any(aid not in ids for aid in person.get('follow_account_ids', [])):
             raise ValueError(person['name'] + '：所选关注账号不存在')

@@ -54,6 +54,79 @@ class MultiAccountTests(unittest.TestCase):
         self.assertTrue(self.state()['completed'])
         self.query.assert_called_once()
 
+    def test_search_switches_serially_and_keeps_the_current_target_and_previous_match(self):
+        self.config['search_account_ids'] = self.actors
+        self.config['people'][0]['follow_account_ids'] = []
+        self.config['people'].append({'id': 'other', 'name': 'Other', 'candidates': ['example_other', 'example_last']})
+        calls = []
+        open_browsers = set()
+
+        @contextlib.contextmanager
+        def browser(account_id):
+            self.assertFalse(open_browsers)
+            open_browsers.add(account_id)
+            try:
+                yield account_id
+            finally:
+                open_browsers.remove(account_id)
+
+        def query(account_id, target):
+            self.assertEqual(open_browsers, {account_id})
+            calls.append((account_id, target))
+            if target == TARGET:
+                return {'status': 'found', 'result': FOUND, 'result_count': 1, 'checked_at': watch.now()}
+            if account_id == self.actors[0]:
+                raise watch.SitePaused('login_required')
+            return {'status': 'not_found', 'result': None, 'result_count': 0, 'checked_at': watch.now()}
+
+        first, backup = self.actors
+        self.browser.side_effect = browser
+        self.query.side_effect = query
+        with patch.object(watch, 'webhook') as notify:
+            self.assertEqual(watch.run_check(self.config), 0)
+            self.assertEqual(calls, [(first, TARGET), (first, 'example_other'),
+                                     (backup, 'example_other'), (backup, 'example_last')])
+            self.assertEqual(self.state()['search']['active_account_id'], backup)
+            self.assertEqual(self.state()['search']['errors'], {first: 'login_required'})
+            self.assertEqual(self.state()['targets']['example_other']['consecutive_errors'], 0)
+            self.assertEqual(watch.run_check(self.config), 0)
+            self.assertEqual(calls[4:], [(backup, 'example_other'), (backup, 'example_last')])
+            self.assertEqual([call.kwargs['event']['kind'] for call in notify.call_args_list], ['found'])
+
+    def test_backup_handles_browser_startup_failure(self):
+        self.config['search_account_ids'] = self.actors
+        self.config['people'][0]['follow_account_ids'] = []
+        self.browser.side_effect = [BlockingIOError('profile busy'), self.page()]
+        with patch.object(watch, 'webhook'):
+            self.assertEqual(watch.run_check(self.config), 0)
+        self.assertEqual(self.state()['search']['active_account_id'], self.actors[1])
+
+    def test_exhausted_logins_pause_once_but_transient_errors_retry(self):
+        self.config['search_account_ids'] = self.actors
+        self.query.side_effect = [TimeoutError('network'), watch.SitePaused('login_required')]
+        with patch.object(watch, 'webhook') as notify:
+            self.assertEqual(watch.run_check(self.config), 2)
+            self.assertFalse(self.state().get('paused'))
+            self.assertIn('next_retry_epoch', self.state()['targets'][TARGET])
+            notify.assert_not_called()
+            self.query.side_effect = watch.SitePaused('login_required')
+            with patch.object(watch.time, 'time', return_value=10**12):
+                self.assertEqual(watch.run_check(self.config), 2)
+                self.assertEqual(watch.run_check(self.config), 0)
+            self.assertEqual(self.state()['pause_reason'], 'search_accounts_unavailable')
+            notify.assert_called_once()
+
+    def test_platform_gate_pauses_before_opening_backup(self):
+        self.config['search_account_ids'] = self.actors
+        for reason in ('ip_risk', 'risk_control', 'http_403', 'http_429'):
+            with self.subTest(reason=reason), patch.object(watch, 'webhook'):
+                watch.STATE.unlink(missing_ok=True)
+                self.browser.reset_mock()
+                self.query.side_effect = watch.SitePaused(reason)
+                self.assertEqual(watch.run_check(self.config), 2)
+                self.assertEqual(self.state()['pause_reason'], reason)
+                self.browser.assert_called_once_with(account_id=self.actors[0])
+
     def test_one_blocked_actor_does_not_pause_the_other(self):
         with patch.object(follow_jobs, 'follow_once', side_effect=[FollowProblem('login_required', blocked=True), {'status': 'followed'}]) as driver, patch.object(watch, 'webhook'):
             watch.run_check(self.config)

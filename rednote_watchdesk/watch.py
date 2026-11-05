@@ -34,6 +34,7 @@ IP_RISK = ("IP存在风险", "网络环境存在风险")
 RISK = ("安全限制", "访问过于频繁", "操作过于频繁", "操作频繁", "访问频繁", "安全验证", "请完成验证", "验证后继续", "账号异常", "访问异常", "异常流量", "滑动验证", "拖动滑块", "请依次点击")
 EMPTY = ("没有找到相关用户", "暂无相关用户", "暂无搜索结果", "未找到相关用户", "没有找到你想要的", "没有搜到相关")
 LOG = logging.getLogger("xhs-watch")
+SEARCH_ACCOUNT_BLOCKS = {'login_required', 'search_account_not_ready', 'search_account_mismatch'}
 
 
 def now():
@@ -116,7 +117,8 @@ def browser_page(headed=False, account_id=None):
         if not account.get("profile_url"):
             raise SitePaused("search_account_not_ready")
         with browser(DATA, account_id, headed) as page:
-            page.goto("https://www.xiaohongshu.com/explore", wait_until="domcontentloaded", timeout=45000)
+            response = page.goto("https://www.xiaohongshu.com/explore", wait_until="domcontentloaded", timeout=45000)
+            check_response(response)
             page.wait_for_timeout(1500)
             check_gate(page)
             identities = page.locator('a[href*="/user/profile/"]').evaluate_all(
@@ -158,15 +160,19 @@ def search(page, target):
         raise
 
 
+def check_response(response):
+    if response and response.status == 401:
+        raise SitePaused("login_required")
+    if response and response.status in (403, 429):
+        raise SitePaused("http_" + str(response.status))
+
+
 def search_users(page, target):
     page._xhs_stage = "navigate_search"
     url = "https://www.xiaohongshu.com/search_result_ai?" + urllib.parse.urlencode(
         {"keyword": target, "source": "web_explore_feed"})
     response = page.goto(url, wait_until="domcontentloaded", timeout=45000)
-    if response and response.status == 401:
-        raise SitePaused("login_required")
-    if response and response.status in (403, 429):
-        raise SitePaused("http_" + str(response.status))
+    check_response(response)
     page.wait_for_timeout(2000)
     page._xhs_stage = "check_access"
     check_gate(page)
@@ -337,8 +343,8 @@ def record_diagnostic(page, target, error):
         write_json(DATA / 'last-error-detail.json', detail)
         write_json(DATA / ('last-error-' + target + '.json'), detail)
         if page:
-            page.screenshot(path=str(DATA / 'last-error.png'))
-            page.screenshot(path=str(DATA / ('last-error-' + target + '.png')))
+            page.screenshot(path=str(DATA / 'last-error.png'), timeout=5000)
+            page.screenshot(path=str(DATA / ('last-error-' + target + '.png')), timeout=5000)
     return detail
 
 
@@ -364,18 +370,86 @@ def finish_follows(state, config):
     write_json(STATE, state)
 
 
+def search_batch(config, account_ids, due, state=None):
+    """Yield results in target order, keeping the failed target at the cursor on failover."""
+    search_state = state.get('search', {}) if state is not None else {}
+    errors = search_state.setdefault('errors', {})
+    active = search_state.get('active_account_id')
+    if active in account_ids:
+        index = account_ids.index(active)
+        account_ids = account_ids[index:] + account_ids[:index]
+    candidates = iter(due)
+    target = next(candidates, None)
+    retryable = None
+
+    def eligible(t):
+        return state is None or query_due(state['targets'][t], time.time(), config.get('interval_seconds', 1800))
+
+    for account_id in account_ids:
+        if state is not None and not config_unchanged(config):
+            return
+        with contextlib.ExitStack() as browser:
+            try:
+                page = browser.enter_context(browser_page(account_id=account_id) if account_id else browser_page())
+            except Exception as error:
+                failure = (error, record_diagnostic(None, target, error))
+            else:
+                while target is not None:
+                    if state is not None and not config_unchanged(config):
+                        return
+                    if eligible(target):
+                        try:
+                            outcome = search(page, target)
+                        except Exception as error:
+                            failure = (error, record_diagnostic(page, target, error))
+                            if len(account_ids) > 1 or isinstance(error, SitePaused):
+                                break
+                            yield target, None, failure
+                        else:
+                            if account_id:
+                                search_state['active_account_id'] = account_id
+                                errors.pop(account_id, None)
+                            yield target, outcome, None
+                    target = next(candidates, None)
+                if target is None:
+                    return
+        error, detail = failure
+        reason = str(error) if isinstance(error, SitePaused) else type(error).__name__
+        if account_id:
+            search_state.pop('active_account_id', None)
+            errors[account_id] = reason
+            if state is not None:
+                LOG.warning('search_account_failed account=%s target=%s stage=%s reason=%s',
+                            account_id, target, detail['stage'], reason)
+                write_json(STATE, state)
+        if isinstance(error, SitePaused):
+            if reason not in SEARCH_ACCOUNT_BLOCKS:
+                yield target, None, failure
+                return
+        else:
+            retryable = failure
+
+    failure = retryable or failure
+    if len(account_ids) > 1 and isinstance(failure[0], SitePaused):
+        failure = (SitePaused('search_accounts_unavailable'), failure[1])
+    yield target, None, failure
+    if not isinstance(failure[0], SitePaused):
+        for target in candidates:
+            if eligible(target):
+                yield target, None, failure
+
+
 def run_check(config, dry_run=False, target=None):
+    account_ids = normalize(config).get('search_account_ids', [None])
     if dry_run:
+        if not account_ids:
+            print(json.dumps({'status': 'paused', 'reason': 'search_account_not_ready'}))
+            return 2
         probe = target or configured_targets(config)[0]
-        page = None
-        try:
-            with browser_page(**({'account_id': config['search_account_id']} if config.get('search_account_id') else {})) as page:
-                try:
-                    outcome = search(page, probe)
-                except Exception as error:
-                    record_diagnostic(page, probe, error)
-                    raise
-        except Exception as error:
+        with contextlib.closing(search_batch(config, account_ids, [probe])) as batch:
+            _, outcome, failure = next(batch)
+        if failure:
+            error, _ = failure
             print(json.dumps({'status': 'paused' if isinstance(error, SitePaused) else 'error',
                               'reason': str(error) if isinstance(error, SitePaused) else type(error).__name__}))
             return 2
@@ -392,10 +466,7 @@ def run_check(config, dry_run=False, target=None):
     interval = config.get('interval_seconds', 1800)
     due = [t for t in state['configured_targets']
            if query_due(state['targets'][t], current, interval)]
-    if due and 'search_account_id' in config and not config['search_account_id']:
-        finish_follows(state, config)
-        return 0
-    if not due:
+    if not due or not account_ids:
         finish_follows(state, config)
         if not delivery_failed:
             deliver(state)
@@ -405,9 +476,8 @@ def run_check(config, dry_run=False, target=None):
     outcomes = []
     successful = []
 
-    def failed(t, error, page):
+    def failed(t, error, detail):
         entry = state['targets'][t]
-        detail = record_diagnostic(page, t, error)
         reason = str(error) if isinstance(error, SitePaused) else type(error).__name__
         entry.update(last_status='paused' if isinstance(error, SitePaused) else 'error',
                      last_error=reason, last_error_detail=detail, last_checked_at=now())
@@ -429,26 +499,14 @@ def run_check(config, dry_run=False, target=None):
                     '，阶段：' + detail['stage'] + '。未暂停，继续自动重试；恢复成功后通知。'})
         write_json(STATE, state)
 
-    page = None
-    attempted = set()
-    try:
-        with browser_page(**({'account_id': config['search_account_id']} if config.get('search_account_id') else {})) as page:
-            for t in due:
-                if not config_unchanged(config):
-                    break
-                if not query_due(state['targets'][t], time.time(), interval):
-                    continue
-                attempted.add(t)
-                entry = state['targets'][t]
-                entry['last_attempt_epoch'] = time.time()
-                write_json(STATE, state)
-                try:
-                    outcome = search(page, t)
-                except Exception as error:
-                    failed(t, error, page)
-                    if isinstance(error, SitePaused):
-                        break
-                    continue
+    with contextlib.closing(search_batch(config, account_ids, due, state)) as batch:
+        for t, outcome, failure in batch:
+            entry = state['targets'][t]
+            entry['last_attempt_epoch'] = time.time()
+            if failure:
+                error, detail = failure
+                failed(t, error, detail if detail['target'] == t else dict(detail, target=t))
+            else:
                 entry.update(last_status=outcome['status'], last_checked_at=outcome['checked_at'],
                              result_count=outcome['result_count'], consecutive_errors=0)
                 entry.pop('last_error', None)
@@ -469,14 +527,6 @@ def run_check(config, dry_run=False, target=None):
                 sync_completion(state)
                 write_json(STATE, state)
                 LOG.info('checked target=%s status=%s results=%s', t, outcome['status'], outcome['result_count'])
-    except Exception as error:
-        # Browser startup failures affect due targets, without double-counting completed work.
-        unprocessed = [t for t in due if t not in attempted and query_due(state['targets'][t], time.time(), interval)]
-        if not unprocessed:
-            raise
-        for t in unprocessed:
-            state['targets'][t]['last_attempt_epoch'] = current
-            failed(t, error, None)
     if successful and state.pop('recovery_pending', False):
         enqueue(state, {'kind': 'recovery', 'text': '【小红书账号监测·已恢复】查询已验证成功：' +
             '、'.join(successful) + '。当前监听：' + '、'.join(state['configured_targets']) + '，约每半小时检查。'})
@@ -643,6 +693,8 @@ def main():
                 state["recovery_pending"] = bool(was_paused)
                 state["resumed_at"] = time.time()
                 state.pop("pause_reason", None)
+                if 'search' in state:
+                    state['search'] = {'account_ids': state['search']['account_ids']}
                 events = ([state["pending"]] if state.get("pending") else []) + state.get("notification_queue", [])
                 events = [e for e in events if e["kind"] != "attention"]
                 state.pop("pending", None)

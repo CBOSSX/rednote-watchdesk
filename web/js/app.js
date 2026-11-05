@@ -1,13 +1,12 @@
 import {layoutChange, reveal, scrollToNode, setVisible, toggleDisclosure} from './motion.js';
-import {accountName, editAccountLabel, renderAccounts, renderFollowerOptions} from './accounts.js';
+import {accountName, editAccountLabel, renderAccounts, renderFollowerOptions, renderSearchAccounts} from './accounts.js';
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
 let latest = null, dirty = false, version = '', toastTimer, selectedFilter = 'unfinished';
-let currentTab = 'people', searchAccountId = null;
-let jobsInitialized = false;
+let currentTab = 'people', searchAccountIds = [];
 let activeNotices = new Set();
-const seenJobResults = new Set(), recentJobResults = new Map();
+const seenJobResults = new Set();
 const credentialEditing = {webhook: false, signing: false};
 const time = value => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '尚未运行';
 
@@ -248,6 +247,14 @@ async function clearNotificationFields(fields) {
   } catch (error) { toast(error.message, true); }
 }
 
+function renderSearchSelection() {
+  renderSearchAccounts(latest.accounts, searchAccountIds, latest.state, ids => {
+    searchAccountIds = ids;
+    changed();
+    renderSearchSelection();
+  });
+}
+
 function renderStatus({initial = false, saved = false} = {}) {
   renderNotificationFields();
   const state = latest.state, badge = $('#global-status'); badge.className = 'pill';
@@ -266,12 +273,13 @@ function renderStatus({initial = false, saved = false} = {}) {
   if (saved && !latest.pending_apply) messages.unshift('配置已保存');
   if (messages.length) toast(messages.join('。'));
   const running = latest.jobs.some(job => job.status === 'running');
-  renderAccounts(latest.accounts, searchAccountId, running, {login: loginAccount, resume: aid => control('follow-resume', aid), rename: account => editAccountLabel(account, renameAccount)});
+  renderSearchSelection();
+  renderAccounts(latest.accounts, running, {login: loginAccount, resume: aid => control('follow-resume', aid), rename: account => editAccountLabel(account, renameAccount)});
   for (const card of $$('.person-card')) {
     const selected = [...card.querySelectorAll('.follow-account:checked')].map(input => input.value);
     renderFollowerOptions(card, latest.accounts, selected, changed);
   }
-  renderJobs();
+  notifyJobResults(initial);
   renderStatuses(); updateStats();
   if (initial) {
     updateFilters();
@@ -286,7 +294,7 @@ async function load() {
     const initial = !latest;
     latest = snapshot;
     if (initial) {
-      searchAccountId = latest.config.search_account_id;
+      searchAccountIds = latest.config.search_account_ids;
       version = latest.version; $('#interval').value = latest.config.interval_seconds / 60;
       renderPeople(latest.config.people);
       $('#mentions').value = latest.notifications.mention_users.map(user => user.name + ',' + user.user_id).join('\n');
@@ -296,7 +304,7 @@ async function load() {
 }
 async function savePeople() {
   try {
-    const config = {interval_seconds: Number($('#interval').value) * 60, search_account_id: searchAccountId, people: readEditors()};
+    const config = {interval_seconds: Number($('#interval').value) * 60, search_account_ids: searchAccountIds, people: readEditors()};
     await api('/api/config', {version, config}); dirty = false;
     const result = await api('/api/state'); version = result.version; latest = result;
     $('#save-hint').textContent = '已保存'; renderStatus({saved: true});
@@ -347,29 +355,18 @@ $('#add-account').onclick = async () => {
   } catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
 };
-$('#search-account-select').onchange = () => { searchAccountId = $('#search-account-select').value || null; changed(); };
 $('#save-search-account').onclick = savePeople;
 
-// Show active work on its own page; completed results expire instead of becoming a log.
-function renderJobs() {
+function notifyJobResults(initial) {
+  const results = [];
   for (const job of latest.jobs) {
     if (job.status === 'running' || seenJobResults.has(job.id)) continue;
     seenJobResults.add(job.id);
-    if (jobsInitialized) {
-      recentJobResults.set(job.scope || 'people', {job, expires: Date.now() + 8000});
-      setTimeout(renderJobs, 8100);
-    }
+    if (!initial) results.push(job);
   }
-  jobsInitialized = true;
-  for (const scope of ['people', 'accounts', 'settings']) {
-    const node = $('#' + scope + '-jobs'); node.replaceChildren();
-    const running = latest.jobs.find(job => job.status === 'running' && job.scope === scope);
-    const recent = recentJobResults.get(scope);
-    const job = running || (recent?.expires > Date.now() ? recent.job : null);
-    if (!job) continue;
-    const line = document.createElement('div'); line.className = 'job-feedback';
-    line.textContent = job.title + ' · ' + (job.status === 'running' ? (scope === 'accounts' ? '进行中，请查看 Chrome 窗口' : '进行中') : job.message);
-    node.append(line);
+  if (results.length) {
+    toast(results.map(job => job.title + ' · ' + job.message).join('。'),
+      results.some(job => job.status === 'failed'));
   }
 }
 for (const slot of ['webhook', 'signing']) {

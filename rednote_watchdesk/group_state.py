@@ -3,7 +3,10 @@ from rednote_watchdesk.watch_config import normalize, signature
 
 def apply_people(state, config):
     plan = normalize(config)
-    state['multi_account'] = 'search_account_id' in plan
+    state['multi_account'] = 'search_account_ids' in plan
+    search_ids = plan.get('search_account_ids')
+    if search_ids != state.get('search', {}).get('account_ids'):
+        state['search'] = {'account_ids': search_ids}
     targets = state.setdefault('targets', {})
     old_people = state.get('people', {})
     people = {}

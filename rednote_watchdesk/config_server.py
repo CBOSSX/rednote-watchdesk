@@ -14,7 +14,7 @@ import time
 import urllib.parse
 
 from rednote_watchdesk.paths import RUNTIME, PROJECT, MONITOR_LABEL
-from rednote_watchdesk.watch_config import normalize, signature
+from rednote_watchdesk.watch_config import SEARCH_ACCOUNT_FIELDS, normalize, signature
 from rednote_watchdesk import accounts
 
 TOKEN = secrets.token_urlsafe(32)
@@ -63,6 +63,9 @@ def payload():
     heartbeat = read(RUNTIME/'data/heartbeat.json')
     notice = read(RUNTIME/'secrets.json')
     plan = accounts.ui_config(cfg, RUNTIME/'data')
+    search = state.get('search', {})
+    if search.get('account_ids') != plan['search_account_ids']:
+        search = {}
     people = []
     for person in plan['people']:
         saved = state.get('people',{}).get(person['id'],{})
@@ -92,7 +95,9 @@ def payload():
             'state':{'paused':state.get('paused',False),'completed':state.get('completed',False),
                      'follow_paused':state.get('follow_paused',False),'people':people,
                      'heartbeat_at':heartbeat.get('updated_at'),'worker_fault':heartbeat.get('worker_fault'),
-                     'pending_notifications':bool(state.get('pending'))},
+                     'pending_notifications':bool(state.get('pending')),
+                     'active_search_account_id':search.get('active_account_id'),
+                     'search_account_errors':search.get('errors', {})},
             'accounts':account_list,'notifications':{'configured':bool(notice.get('webhook_url')),
                 'signing_configured':bool(notice.get('signing_secret')),'mention_users':notice.get('mention_users',[])},'jobs':jobs}
 
@@ -112,17 +117,19 @@ def save_config(body):
         current = read(RUNTIME/'config.json')
         if body.get('version') != signature(current):
             raise RuntimeError('配置已被其他页面修改，请刷新后重试')
-        if 'search_account_id' in current and 'search_account_id' not in body.get('config', {}):
+        submitted = body.get('config')
+        plan = normalize(submitted)
+        if (SEARCH_ACCOUNT_FIELDS & current.keys() and not SEARCH_ACCOUNT_FIELDS & submitted.keys()
+                or 'search_account_ids' in current and 'search_account_ids' not in submitted):
             raise RuntimeError('账号配置已升级，请刷新页面后重试')
-        plan = normalize(body.get('config'))
-        if 'search_account_id' in plan:
+        if 'search_account_ids' in plan:
             accounts.validate_selection(plan, RUNTIME/'data')
         if plan['interval_seconds'] < 60:
             raise ValueError('轮询间隔至少为 1 分钟')
         # Validate migration against an isolated copy; reject removal of a matched candidate.
         from rednote_watchdesk.watch import migrate_state
         migrate_state(read(RUNTIME/'data/state.json'),plan)
-        if 'search_account_id' in plan:
+        if 'search_account_ids' in plan:
             accounts.persist_registry(RUNTIME/'data')
         write(RUNTIME/'config.json',plan)
     wake()
@@ -275,7 +282,8 @@ class Handler(BaseHTTPRequestHandler):
 def scheduler():
     while True:
         try:
-            subprocess.run([sys.executable,'-m','rednote_watchdesk.tick'],timeout=510,cwd=PROJECT)
+            # The tick process bounds and terminates its own worker, including failover.
+            subprocess.run([sys.executable,'-m','rednote_watchdesk.tick'],cwd=PROJECT)
         except Exception:
             pass
         WAKE.wait(60);WAKE.clear()

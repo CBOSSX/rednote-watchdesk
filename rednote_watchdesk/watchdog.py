@@ -73,10 +73,13 @@ def diagnose(wall, monitor, heartbeat, loaded):
     if heartbeat.get('status') == 'fatal':
         return '主程序启动失败或超时：' + heartbeat.get('reason', 'unknown')
     limit = heartbeat.get('timeout_seconds', 240) + 60
-    if heartbeat.get('status') in ('checking', 'starting') and wall-heartbeat.get('started_at', wall) > limit:
+    running = heartbeat.get('status') in ('checking', 'starting')
+    if running and wall-heartbeat.get('started_at', wall) > limit:
         return '主程序运行超过' + str(limit//60) + '分钟，可能卡住'
     if heartbeat.get('worker_fault'):
         return '主程序故障尚未通过后续执行验证恢复：'+heartbeat['worker_fault']
+    if running:
+        return None
     if wall-heartbeat.get('updated_at', 0) > 900:
         return '主调度器超过15分钟没有运行记录'
     if wall-max(monitor.get('last_attempt_epoch', 0), monitor.get('resumed_at', 0)) > 2700:

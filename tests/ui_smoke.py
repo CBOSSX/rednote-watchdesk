@@ -61,8 +61,8 @@ def exercise(page, root, reduced):
         assert page.evaluate('document.getAnimations().length') == 0
     else:
         assert page.locator('#accounts-tab').evaluate('node => node.getAnimations().length') > 0
-    expect(page.locator('#accounts-jobs')).to_be_empty()
-    expect(page.locator('#settings-jobs')).to_be_empty()
+    banners = page.locator('.jobs, .job-feedback, #banner')
+    expect(banners).to_have_count(0)
     expect(page.locator('.account-card')).to_have_count(2)
     page.locator('#account-label').fill('备用账号')
     page.locator('#add-account').click()
@@ -80,14 +80,53 @@ def exercise(page, root, reduced):
     page.locator('#save-account-label').click()
     expect(page.locator('#rename-account-dialog')).not_to_be_visible()
     expect(first_account.locator('.account-label-text')).to_have_text('我的搜索与关注账号')
-    expect(page.locator('#search-account-select option').nth(1)).to_contain_text('我的搜索与关注账号')
+    search_order = page.locator('#search-account-order')
+    expect(search_order.locator('strong')).to_have_text(['1 · 我的搜索与关注账号'])
     snapshot = page.request.get(root + '/api/state').json()
     assert snapshot['accounts'][0]['id'] == actor_ids[0]
     assert snapshot['config']['people'][0]['name'] == 'Alpha'  # Rename cannot save target drafts.
-    page.locator('#search-account-select').select_option(actor_ids[1])
+    add_search = page.locator('#add-search-account')
+    search_picker = page.locator('#search-account-dialog')
+    confirm_search = search_picker.get_by_role('button', name='确认')
+    work_search = search_picker.get_by_role('checkbox', name='工作账号', exact=False)
+    backup_search = search_picker.get_by_role('checkbox', name='备用账号', exact=False)
+    expect(page.locator('#accounts-tab select')).to_have_count(0)
+    add_search.click()
+    expect(confirm_search).to_be_disabled()
+    work_search.check()
+    expect(confirm_search).to_be_enabled()
+    expect(search_order.locator('li')).to_have_count(1)
+    page.keyboard.press('Escape')
+    expect(search_picker).not_to_be_visible()
+    expect(add_search).to_be_focused()
+    expect(search_order.locator('li')).to_have_count(1)
+    add_search.click()
+    expect(work_search).not_to_be_checked()
+    expect(search_picker.get_by_role('checkbox')).to_have_count(2)
+    backup_search.check()
+    work_search.press('Space')
+    expect(backup_search).to_be_checked()
+    expect(work_search).to_be_checked()
+    expect(search_order.locator('li')).to_have_count(1)
+    confirm_search.press('Enter')
+    expect(search_picker).not_to_be_visible()
+    expect(search_order.locator('strong')).to_have_text(['1 · 我的搜索与关注账号', '2 · 工作账号', '3 · 备用账号'])
+    search_order.get_by_role('button', name='上移 工作账号').click()
+    add_search.click()
+    expect(search_picker).to_contain_text('所有账号都已加入搜索顺序')
+    expect(confirm_search).to_be_disabled()
+    page.locator('#cancel-search-account-dialog').click()
+    expect(search_order.locator('strong')).to_have_text(['1 · 工作账号', '2 · 我的搜索与关注账号', '3 · 备用账号'])
     page.locator('#save-search-account').click()
     expect(page.locator('#save-hint')).to_have_text('已保存')
-    assert page.request.get(root + '/api/state').json()['config']['search_account_id'] == actor_ids[1]
+    saved_search_order = [actor_ids[1], actor_ids[0], actor_ids[2]]
+    assert page.request.get(root + '/api/state').json()['config']['search_account_ids'] == saved_search_order
+    state_path = server.RUNTIME / 'data/state.json'
+    state = server.read(state_path)
+    state['search'] = {'account_ids': saved_search_order, 'active_account_id': actor_ids[0],
+                       'errors': {actor_ids[1]: 'login_required'}}
+    server.write(state_path, state)
+    expect(search_order.locator('small')).to_have_text(['登录已失效', '当前使用', '待登录'], timeout=7000)
     page.locator('[data-tab="people"]').click()
     expect(page.locator('.name').first).to_have_value('编辑中的目标')
 
@@ -144,7 +183,7 @@ def exercise(page, root, reduced):
     page.locator('#save-people').click()
     expect(page.locator('#save-hint')).to_have_text('已保存')
     expect(page.locator('#toast.show')).to_have_text('配置已保存，将在下一轮调度时生效')
-    expect(page.locator('#banner')).to_have_count(0)
+    expect(banners).to_have_count(0)
     saved = page.request.get(root + '/api/state').json()['config']['people']
     assert len(saved) == 4 and saved[0]['name'] == '编辑中的目标'
     assert saved[-1]['candidates'] == ['example_delta'] and saved[-1]['auto_follow']
@@ -155,16 +194,19 @@ def exercise(page, root, reduced):
     expect(page.locator('.person-card')).to_have_count(3)
 
     page.locator('[data-tab="settings"]').click()
+    settings_panel = page.locator('#settings-tab .panel').first
+    top_in_section = 'panel => panel.getBoundingClientRect().top - panel.parentElement.getBoundingClientRect().top'
+    panel_top = settings_panel.evaluate(top_in_section)
     page.locator('#test-notifications').click()
-    expect(page.locator('#settings-jobs')).to_contain_text('测试飞书通知')
-    expect(page.locator('#accounts-jobs')).to_be_empty()
+    expect(page.locator('#toast.show')).to_have_text('操作已提交')
+    expect(banners).to_have_count(0)
+    assert settings_panel.evaluate(top_in_section) == panel_top
     for job in server.JOBS.values():
         if job['status'] == 'running':
             job.update(status='succeeded', message='操作完成', finished_at=time.time())
-    expect(page.locator('#settings-jobs')).to_contain_text('操作完成', timeout=7000)
-    expect(page.locator('#settings-jobs')).to_be_empty(timeout=10000)
-    expect(page.locator('#accounts-jobs')).to_be_empty()
-    expect(page.locator('#toast')).to_be_hidden()
+    expect(page.locator('#toast.show')).to_have_text('测试飞书通知 · 操作完成', timeout=7000)
+    expect(banners).to_have_count(0)
+    expect(page.locator('#toast')).to_be_hidden(timeout=8000)
     expect(page.locator('#webhook-editor')).to_be_hidden()
     page.locator('#replace-webhook').click()
     expect(page.locator('#webhook')).to_be_focused()
@@ -182,6 +224,14 @@ def exercise(page, root, reduced):
         page.locator(f'[data-tab="{tab}"]').click()
         expect(page.locator(f'#{tab}-tab')).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), tab
+    page.locator('[data-tab="accounts"]').click()
+    search_order.get_by_role('button', name='移除 备用账号').click()
+    add_search.click()
+    expect(search_picker).to_be_visible()
+    expect(backup_search).to_be_visible()
+    search_box = search_picker.bounding_box()
+    assert 0 <= search_box['x'] and search_box['x'] + search_box['width'] <= 390
+    page.keyboard.press('Escape')
     page.locator('[data-tab="people"]').click()
     mobile_card = page.locator('.person-card').first
     mobile_height = mobile_card.bounding_box()['height']

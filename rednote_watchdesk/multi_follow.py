@@ -11,6 +11,8 @@ def run(state, config, *, data, enqueue, save, gate, site_paused, driver):
     paused = state.setdefault('follow_paused_accounts', {})
     for target in state.get('auto_follow_targets', []):
         entry = state['targets'][target]
+        if not entry.get('found'):
+            continue
         for aid in selected_accounts(state, target):
             job = entry['follows'][aid]
             if attempted >= 2:

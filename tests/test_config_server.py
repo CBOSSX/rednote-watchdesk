@@ -31,26 +31,28 @@ class ServerTests(unittest.TestCase):
    code,body=self.request(asset);self.assertEqual(code,200,asset);self.assertTrue(body)
   for path in ['/js/../../secrets.json','/rednote_watchdesk/paths.py','/examples/secrets.example.json']:
    self.assertEqual(self.request(path)[0],404)
- def test_create_accounts_and_save_one_search_multiple_followers(self):
+ def test_create_accounts_and_save_ordered_search_and_multiple_followers(self):
   ids=[]
   for label in ['first','second']:
    code,data=self.request('/api/accounts',{'label':label});self.assertEqual(code,201)
    ids.append(json.loads(data)['account']['id'])
-  config={'interval_seconds':1800,'search_account_id':ids[0],'people':[{'id':'person','name':'Person','candidates':['example_person'],'follow_account_ids':ids}]}
+  config={'interval_seconds':1800,'search_account_ids':ids[::-1],'people':[{'id':'person','name':'Person','candidates':['example_person'],'follow_account_ids':ids}]}
   with patch.object(server,'wake'):
    code,_=self.request('/api/config',{'version':signature(server.read(self.root/'config.json')),'config':config})
   self.assertEqual(code,200)
   code,data=self.request('/api/state');result=json.loads(data)
-  self.assertEqual(result['config']['search_account_id'],ids[0])
+  self.assertEqual(result['config']['search_account_ids'],ids[::-1])
   self.assertEqual(result['config']['people'][0]['follow_account_ids'],ids)
   self.assertTrue(result['config']['people'][0]['auto_follow'])
  def test_missing_actor_and_old_client_cannot_overwrite_multi_account_config(self):
-  config={'interval_seconds':1800,'search_account_id':'missing','people':[]}
-  body={'version':signature(server.read(self.root/'config.json')),'config':config}
-  self.assertEqual(self.request('/api/config',body)[0],400)
-  server.write(self.root/'config.json',dict(config,search_account_id=None))
-  body={'version':signature(server.read(self.root/'config.json')),'config':{'people':[]}}
-  self.assertEqual(self.request('/api/config',body)[0],409)
+  version=signature(server.read(self.root/'config.json'))
+  for invalid in [['missing'], ['missing', 'missing'], 'missing', None]:
+   config={'interval_seconds':1800,'search_account_ids':invalid,'people':[]}
+   self.assertEqual(self.request('/api/config',{'version':version,'config':config})[0],400)
+  config={'interval_seconds':1800,'search_account_ids':[],'people':[]}
+  server.write(self.root/'config.json',config)
+  for stale in [{'people':[]}, {'people':[], 'search_account_id':None}]:
+   self.assertEqual(self.request('/api/config',{'version':signature(config),'config':stale})[0],409)
  def test_login_and_control_jobs_have_account_identity_and_page_scope(self):
   _,data=self.request('/api/accounts',{'label':'one'});aid=json.loads(data)['account']['id']
   with patch.object(server,'start_job',return_value='test-job') as start:
@@ -67,6 +69,7 @@ class ServerTests(unittest.TestCase):
    self.assertEqual(self.request('/api/config',{'version':payload['version'],'config':payload['config']})[0],200)
   _,data=self.request('/api/state');payload=json.loads(data)
   self.assertEqual({a['id'] for a in payload['accounts']},{'legacy_search','legacy_follow'})
+  self.assertEqual(payload['config']['search_account_ids'],['legacy_search'])
   self.assertEqual(payload['config']['people'][0]['follow_account_ids'],['legacy_follow'])
  def test_rename_account_does_not_wake_monitor_or_change_configuration(self):
   _,data=self.request('/api/accounts',{'label':'original'});aid=json.loads(data)['account']['id']

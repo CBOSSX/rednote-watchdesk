@@ -22,6 +22,7 @@ REASONS = {'login_required': '搜索账号登录已失效', 'ip_risk': '当前�
            'TargetClosedError': '浏览器意外关闭',
            'search_account_not_ready': '搜索账号尚未完成登录',
            'search_account_mismatch': '当前登录身份与所选搜索账号不一致',
+           'search_accounts_unavailable': '所有已配置的搜索账号均不可用',
            'follow_account_not_ready': '执行账号尚未完成登录配置',
            'follow_account_mismatch': '当前登录账号与配置的执行账号不一致',
            'follow_target_mismatch': '主页上的小红书号或主页地址与目标不一致',

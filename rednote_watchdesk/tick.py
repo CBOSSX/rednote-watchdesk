@@ -65,22 +65,26 @@ def main():
             changed = needs_reconcile(config, state)
             now = time.time()
             interval = config.get("interval_seconds", 1800)
+            names = [t for p in plan['people'] for t in p['candidates']]
             follow_work = False
             if state.get("targets"):
-                names = [t for p in plan['people'] for t in p['candidates']]
                 entries = [state["targets"].get(t, {}) for t in names]
-                due = any(query_due(e, now, interval) for e in entries)
+                due_count = sum(query_due(e, now, interval) for e in entries)
                 follow_work = any(follow_due(state['targets'].get(t, {}), now, state.get('auto_follow_enabled', config.get('auto_follow_enabled')), state.get('follow_paused'))
                                   for t in state.get('auto_follow_targets', config.get('auto_follow_targets', [])) if t in names)
                 if state.get('multi_account'):
                     from rednote_watchdesk.follow_state import multi_follow_due
                     follow_work = multi_follow_due(state, now)
             else:
-                due = query_due(state, now, interval)
-            if not changed and not state.get("pending") and (state.get("paused") or state.get("completed") or (state.get("query_complete") and not follow_work) or not (due or follow_work)):
+                due_count = max(1, len(names)) if query_due(state, now, interval) else 0
+            if not changed and not state.get("pending") and (state.get("paused") or state.get("completed") or (state.get("query_complete") and not follow_work) or not (due_count or follow_work)):
                 heartbeat("idle")
                 return
             timeout = 480 if any(p['auto_follow'] for p in plan['people']) else 240
+            account_count = len(plan.get('search_account_ids', []))
+            if due_count and account_count > 1 and not state.get('paused'):
+                # Each backup can require a browser startup, identity check and another search.
+                timeout += 220 * (account_count - 1) + 115 * (due_count - 1)
             heartbeat("checking", started_at=started, timeout_seconds=timeout)
             child = subprocess.Popen([sys.executable, "-m", "rednote_watchdesk.watch", "check"], cwd=PROJECT, start_new_session=True)
             try:

@@ -99,6 +99,16 @@ class TickTests(unittest.TestCase):
         with patch.object(tick.subprocess,'Popen',return_value=child),patch.object(tick.os,'killpg') as kill:
             tick.main();kill.assert_called_once_with(12345,signal.SIGTERM)
         self.assertEqual(self.health()['worker_fault'],'worker_timeout')
+    def test_search_failover_has_time_to_open_backups(self):
+        cfg={'targets':['example_alpha','example_beta'],'search_account_ids':['first','backup'],'interval_seconds':1800}
+        (self.root/'config.json').write_text(json.dumps(cfg))
+        child=Mock();child.wait.return_value=0
+        with patch.object(tick.subprocess,'Popen',return_value=child):
+            tick.main()
+        timeout=child.wait.call_args.kwargs['timeout']
+        self.assertGreater(timeout,480)
+        self.assertIsNone(watchdog.diagnose(10000,{'last_attempt_epoch':9500},
+            {'status':'checking','started_at':9500,'updated_at':9000,'timeout_seconds':timeout},True))
     def test_retry_deadline_overrides_interval_but_prevents_early_queries(self):
         import time
         now=time.time()
