@@ -189,9 +189,41 @@ def exercise(page, root, reduced):
     assert saved[-1]['candidates'] == ['example_delta'] and saved[-1]['auto_follow']
     assert saved[-1]['follow_account_ids'] == actor_ids[:2]
     page.locator('[data-filter="all"]').click()
-    page.once('dialog', lambda dialog: dialog.accept())
+    # Deletion stays inside the page; dismissing it must preserve the draft.
+    native_dialogs = []
+    def dismiss_native_dialog(dialog):
+        native_dialogs.append(dialog.type)
+        dialog.dismiss()
+    page.on('dialog', dismiss_native_dialog)
+    delete_dialog = page.get_by_role('dialog', name='删除监控目标')
     card.locator('.remove').click()
+    expect(delete_dialog).to_be_visible()
+    expect(delete_dialog).to_contain_text('新目标')
+    expect(delete_dialog).to_contain_text('现有关注关系将保留')
+    expect(delete_dialog.get_by_role('button', name='取消')).to_be_focused()
+    page.keyboard.press('Escape')
+    expect(delete_dialog).not_to_be_visible()
+    expect(card.locator('.remove')).to_be_focused()
+    expect(page.locator('.person-card')).to_have_count(4)
+    expect(page.locator('#save-hint')).to_have_text('已保存')
+    card.locator('.remove').click()
+    delete_dialog.get_by_role('button', name='取消').click()
+    expect(page.locator('.person-card')).to_have_count(4)
+    card.locator('.remove').click()
+    delete_dialog.get_by_role('button', name='关闭确认弹窗').click()
+    expect(page.locator('.person-card')).to_have_count(4)
+    card.locator('.remove').click()
+    delete_dialog.get_by_role('button', name='删除目标', exact=True).click()
+    expect(delete_dialog).not_to_be_visible()
     expect(page.locator('.person-card')).to_have_count(3)
+    expect(page.locator('#people-count')).to_have_text('3')
+    expect(page.locator('.person-card').last.locator('.name')).to_be_focused()
+    expect(page.locator('#save-hint')).to_have_text('有未保存的修改')
+    assert len(page.request.get(root + '/api/state').json()['config']['people']) == 4
+    page.locator('#save-people').click()
+    expect(page.locator('#save-hint')).to_have_text('已保存')
+    assert len(page.request.get(root + '/api/state').json()['config']['people']) == 3
+    assert not native_dialogs, native_dialogs
 
     page.locator('[data-tab="settings"]').click()
     settings_panel = page.locator('#settings-tab .panel').first
@@ -215,6 +247,69 @@ def exercise(page, root, reduced):
     expect(page.locator('#webhook-editor')).to_be_hidden()
     page.locator('#replace-webhook').click()
     expect(page.locator('#webhook')).to_have_value('')
+
+    # All clearing variants share the page dialog and only submit on confirmation.
+    clearing_requests = []
+    page.on('request', lambda request: clearing_requests.append(request.post_data_json)
+            if request.url.endswith('/api/notifications/clear') else None)
+    confirmation = page.locator('#confirmation-dialog')
+    page.locator('#clear-webhook').click()
+    expect(confirmation).to_have_accessible_name('清除 Webhook 地址')
+    expect(confirmation).to_contain_text('待发送消息会保留')
+    expect(confirmation.get_by_role('button', name='取消')).to_be_focused()
+    expect(page.locator('#confirmation-hint')).to_be_hidden()
+    page.keyboard.press('Escape')
+    expect(page.locator('#clear-webhook')).to_be_focused()
+    expect(page.locator('#webhook-status')).to_have_text('已配置')
+    assert not clearing_requests
+    for button, title, fields in [
+        ('#clear-webhook', '清除 Webhook 地址', ['webhook_url']),
+        ('#clear-signing', '清除签名密钥', ['signing_secret']),
+    ]:
+        page.locator(button).click()
+        expect(confirmation).to_have_accessible_name(title)
+        with page.expect_response('**/api/notifications/clear') as response:
+            confirmation.get_by_role('button', name='清除配置').click()
+        assert response.value.ok
+        expect(page.locator('#toast.show')).to_have_text('已清除所选配置')
+        assert clearing_requests[-1] == {'fields': fields}
+    snapshot = page.request.get(root + '/api/state').json()['notifications']
+    assert not snapshot['configured'] and not snapshot['signing_configured']
+
+    page.locator('#webhook').fill('https://open.feishu.cn/open-apis/bot/v2/hook/TEST_ONLY')
+    page.locator('#signing').fill('TEST_SIGNING_ONLY')
+    page.locator('#mentions').fill('测试提醒,ou_test')
+    page.locator('#save-notifications').click()
+    expect(page.locator('#webhook-status')).to_have_text('已配置')
+    expect(page.locator('#signing-status')).to_have_text('已配置')
+    page.locator('#clear-notifications').click()
+    expect(confirmation).to_have_accessible_name('清除通知配置')
+    confirmation.get_by_role('button', name='取消').click()
+    assert len(clearing_requests) == 2
+    page.locator('#clear-notifications').click()
+    confirmation.get_by_role('button', name='清除配置').click()
+    expect(page.locator('#toast.show')).to_have_text('通知配置已清除')
+    assert clearing_requests[-1] == {'fields': ['webhook_url', 'signing_secret', 'mention_users']}
+    snapshot = page.request.get(root + '/api/state').json()['notifications']
+    assert not snapshot['configured'] and not snapshot['signing_configured'] and not snapshot['mention_users']
+
+    page.locator('[data-tab="accounts"]').click()
+    login_requests = []
+    page.on('request', lambda request: login_requests.append(request.post_data_json)
+            if request.url.endswith('/api/login') else None)
+    first_account.locator('.fresh').click()
+    expect(confirmation).to_have_accessible_name('重新扫码登录')
+    expect(confirmation).to_contain_text('请登录同一个身份')
+    expect(confirmation.get_by_role('button', name='取消')).to_be_focused()
+    page.keyboard.press('Escape')
+    expect(first_account.locator('.fresh')).to_be_focused()
+    assert not login_requests
+    first_account.locator('.fresh').click()
+    with page.expect_response('**/api/login') as response:
+        confirmation.get_by_role('button', name='重新扫码', exact=True).click()
+    assert response.value.ok
+    expect(confirmation).not_to_be_visible()
+    assert login_requests == [{'account_id': actor_ids[0], 'fresh': True}]
     # Switching reduced motion on during animation cancels active effects.
     page.emulate_media(reduced_motion='reduce')
     page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
@@ -242,6 +337,14 @@ def exercise(page, root, reduced):
     assert 0 <= box['x'] and box['x'] + box['width'] <= 390
     assert 0 <= box['y'] and box['y'] + box['height'] <= 844
     page.locator('#cancel-follow-dialog').click()
+    mobile_card.locator('.remove').click()
+    expect(delete_dialog).to_be_visible()
+    box = delete_dialog.bounding_box()
+    assert 0 <= box['x'] and box['x'] + box['width'] <= 390
+    assert 0 <= box['y'] and box['y'] + box['height'] <= 844
+    page.keyboard.press('Escape')
+    expect(mobile_card.locator('.remove')).to_be_focused()
+    assert not native_dialogs, native_dialogs
     assert not errors, errors
 
 
@@ -259,7 +362,6 @@ def main():
             {'id': name, 'name': name.title(), 'candidates': ['example_' + name], 'auto_follow': False}
             for name in ['alpha', 'beta', 'gamma']
         ]}
-        server.write(server.RUNTIME / 'secrets.json', {'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/TEST_ONLY'})
         http = server.ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         thread = threading.Thread(target=http.serve_forever, daemon=True)
         thread.start()
@@ -268,6 +370,10 @@ def main():
                 browser = playwright.chromium.launch(channel='chrome', headless=True)
                 try:
                     for reduced in [False, True]:
+                        server.write(server.RUNTIME / 'secrets.json', {
+                            'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/TEST_ONLY',
+                            'signing_secret': 'TEST_SIGNING_ONLY',
+                        })
                         server.write(server.RUNTIME / 'data/accounts.json', {'accounts': []})
                         server.JOBS.clear()
                         server.JOBS['historical'] = {'id': 'historical', 'scope': 'settings', 'title': '测试飞书通知', 'status': 'succeeded', 'message': '操作完成', 'finished_at': time.time() - 3600}

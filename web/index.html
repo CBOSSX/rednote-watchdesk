@@ -41,7 +41,7 @@
     <div class="person-top">
       <div class="person-avatar" aria-hidden="true"></div>
       <div class="person-name"><label class="visually-hidden">目标名称</label><input class="name" maxlength="80" placeholder="目标名称" aria-label="目标名称"></div>
-      <button class="icon-button remove" aria-label="删除监控目标" title="删除目标">×</button>
+      <button class="icon-button remove" type="button" aria-label="删除监控目标" title="删除目标" aria-haspopup="dialog">×</button>
     </div>
     <div class="target-meta"><span class="person-status pill"></span><span class="candidate-total"></span></div>
     <div class="person-body">
@@ -52,6 +52,10 @@
   </article>
 </template>
 <template id="account-template"><article class="panel account-card"><div class="account-card-heading"><span class="account-icon">账</span><span class="account-role pill"></span></div><div class="account-label-heading"><h2 class="account-label-text"></h2><button class="link-button rename-account" type="button" aria-haspopup="dialog">修改备注</button></div><div class="account-info"></div><div class="row"><button class="button primary login">登录 / 校验</button><button class="button quiet account-resume hidden">恢复关注任务</button></div><button class="link-button fresh">重新扫码登录</button></article></template>
+<dialog id="confirmation-dialog" class="editor-dialog" aria-labelledby="confirmation-title" aria-describedby="confirmation-description confirmation-hint">
+  <div class="dialog-heading"><div><h2 id="confirmation-title"></h2><p id="confirmation-description"></p></div><button type="button" id="close-confirmation" class="icon-button" aria-label="关闭确认弹窗">×</button></div>
+  <div class="dialog-footer"><p id="confirmation-hint" class="hint"></p><div class="row"><button type="button" id="cancel-confirmation" class="button" autofocus>取消</button><button type="button" id="confirm-action" class="button primary"></button></div></div>
+</dialog>
 <dialog id="follow-dialog" class="editor-dialog" aria-labelledby="follow-dialog-title" aria-describedby="follow-dialog-description">
   <div class="dialog-heading"><div><h2 id="follow-dialog-title">选择自动关注账号</h2><p id="follow-dialog-description"></p></div><button type="button" id="close-follow-dialog" class="icon-button" aria-label="关闭账号选择">×</button></div>
   <div class="dialog-body"><div id="follow-dialog-options" class="dialog-account-options"></div><p class="hint">可多选；不选账号时，只发送发现通知</p></div>

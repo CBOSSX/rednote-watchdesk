@@ -175,15 +175,36 @@ function createPerson(person) {
   });
   card.querySelector('.name').addEventListener('blur', () => setTimeout(applyFilters, 0));
   card.querySelector('.add-candidate').onclick = () => { addCandidate(card, '', true); changed(); };
-  card.querySelector('.remove').onclick = () => {
-    if (confirm('删除“' + (card.querySelector('.name').value || '未命名目标') + '”的监控配置？现有关注关系将保留')) {
-      const next = card.nextElementSibling || card.previousElementSibling;
-      layoutChange($('#people-list'), () => { card.remove(); dirty = true; updateStats(); updateFilters(); });
-      $('#save-hint').textContent = '有未保存的修改';
-      (next && !next.classList.contains('hidden') ? next.querySelector('.name') : $('#add-person')).focus({preventScroll: true});
-    }
-  };
+  card.querySelector('.remove').onclick = () => confirmRemovePerson(card);
   return card;
+}
+function confirmAction({title, description, confirmLabel, hint = ''}) {
+  const dialog = $('#confirmation-dialog');
+  if (dialog.open) return Promise.resolve(false);
+  $('#confirmation-title').textContent = title;
+  $('#confirmation-description').textContent = description;
+  $('#confirmation-hint').textContent = hint;
+  $('#confirmation-hint').classList.toggle('hidden', !hint);
+  $('#confirm-action').textContent = confirmLabel;
+  $('#close-confirmation').onclick = $('#cancel-confirmation').onclick = () => dialog.close('cancel');
+  $('#confirm-action').onclick = () => dialog.close('confirm');
+  dialog.returnValue = '';
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), {once: true});
+    dialog.showModal();
+    reveal(dialog, 8);
+  });
+}
+async function confirmRemovePerson(card) {
+  if (!await confirmAction({
+    title: '删除监控目标',
+    description: '确定删除“' + (card.querySelector('.name').value || '未命名目标') + '”的监控配置？现有关注关系将保留。',
+    confirmLabel: '删除目标', hint: '删除后，点击页面的“保存配置”生效'
+  })) return;
+  const next = card.nextElementSibling || card.previousElementSibling;
+  layoutChange($('#people-list'), () => { card.remove(); dirty = true; updateStats(); updateFilters(); });
+  $('#save-hint').textContent = '有未保存的修改';
+  (next && !next.classList.contains('hidden') ? next.querySelector('.name') : $('#add-person')).focus({preventScroll: true});
 }
 function renderStatuses() {
   if (!latest) return;
@@ -236,8 +257,9 @@ function renderNotificationFields() {
 }
 async function clearNotificationFields(fields) {
   const all = fields.length === 3;
-  const prompt = all ? '清除全部飞书通知配置（Webhook、签名密钥和 @ 对象）？重新配置 Webhook 前将无法发送飞书通知，待发送消息会保留' : fields[0] === 'webhook_url' ? '清除已保存的 Webhook 地址？重新配置前将无法发送飞书通知，待发送消息会保留' : '清除已保存的签名密钥？如果机器人仍启用签名校验，消息可能发送失败';
-  if (!confirm(prompt)) return;
+  const description = all ? '清除全部飞书通知配置（Webhook、签名密钥和 @ 对象）？重新配置 Webhook 前将无法发送飞书通知，待发送消息会保留' : fields[0] === 'webhook_url' ? '清除已保存的 Webhook 地址？重新配置前将无法发送飞书通知，待发送消息会保留' : '清除已保存的签名密钥？如果机器人仍启用签名校验，消息可能发送失败';
+  const title = all ? '清除通知配置' : fields[0] === 'webhook_url' ? '清除 Webhook 地址' : '清除签名密钥';
+  if (!await confirmAction({title, description, confirmLabel: '清除配置'})) return;
   try {
     await api('/api/notifications/clear', {fields});
     if (fields.includes('webhook_url')) { $('#webhook').value = ''; credentialEditing.webhook = false; }
@@ -340,7 +362,10 @@ async function renameAccount(accountId, label, previousLabel) {
   toast('账号备注已保存');
 }
 async function loginAccount(accountId, fresh) {
-  if (fresh && !confirm('将清除此账号浏览器的 Cookie 并重新扫码，请登录同一个身份。其他身份请添加新账号')) return;
+  if (fresh && !await confirmAction({
+    title: '重新扫码登录', confirmLabel: '重新扫码',
+    description: '将清除此账号浏览器的 Cookie 并重新扫码，请登录同一个身份。其他身份请添加新账号'
+  })) return;
   try {
     await api('/api/login', {account_id: accountId, fresh});
     toast('正在打开独立 Chrome 登录窗口，请扫码登录');
@@ -399,5 +424,6 @@ $('#save-notifications').onclick = async () => {
     toast('通知设置已保存'); await load();
   } catch (error) { toast(error.message, true); }
 };
+// Browsers require their own synchronous prompt when leaving with unsaved edits.
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
 load(); setInterval(() => load(), 5000);
