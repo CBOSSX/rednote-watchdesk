@@ -97,6 +97,9 @@ export function editAccountLabel(account, save) {
 }
 
 const searchProblems = {
+  TimeoutError: '页面加载或读取超时',
+  TargetClosedError: '浏览器意外关闭',
+  BlockingIOError: '浏览器正被其他任务使用',
   login_required: '登录已失效',
   search_account_not_ready: '尚未登录',
   search_account_mismatch: '登录身份不一致',
@@ -110,9 +113,10 @@ export function renderSearchAccounts(accounts, selected, state, onChange) {
   const list = $('#search-account-order');
   const add = $('#add-search-account');
   const active = state.active_search_account_id, errors = state.search_account_errors || {};
+  const details = state.search_account_error_details || {};
   const byId = new Map(accounts.map(account => [account.id, account]));
   const stopped = state.paused || state.completed;
-  const signature = JSON.stringify([accounts.map(a => [a.id, a.label, a.name, a.ready, a.red_id]), selected, active, errors, stopped]);
+  const signature = JSON.stringify([accounts.map(a => [a.id, a.label, a.name, a.ready, a.red_id]), selected, active, errors, details, stopped]);
   if (list.dataset.signature === signature) return;
   list.dataset.signature = signature;
   add.onclick = () => {
@@ -155,7 +159,7 @@ export function renderSearchAccounts(accounts, selected, state, onChange) {
     name.textContent = (index + 1) + ' · ' + accountLabel;
     const status = document.createElement('small');
     const problem = errors[id];
-    status.textContent = id === active ? (stopped ? '上次使用' : '当前使用') : problem ? searchProblems[problem] || '上次搜索异常' :
+    status.textContent = problem ? details[id]?.message || searchProblems[problem] || '上次搜索异常' : id === active ? (stopped ? '上次使用' : '当前使用') :
       !account?.ready ? '待登录' : index === 0 ? '首选' : '备用';
     label.append(name, status);
     const controls = document.createElement('div'); controls.className = 'row';

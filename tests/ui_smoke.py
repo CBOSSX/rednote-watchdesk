@@ -12,6 +12,8 @@ from unittest.mock import patch
 from playwright.sync_api import expect, sync_playwright
 
 from rednote_watchdesk import config_server as server, accounts
+from rednote_watchdesk import watch
+from rednote_watchdesk.query_diagnostics import public_error
 
 
 def exercise(page, root, reduced):
@@ -31,6 +33,10 @@ def exercise(page, root, reduced):
     with page.expect_request('**/api/state'):
         page.goto(root)
     stats = page.locator('.stats')
+    progress_panel = page.locator('#query-progress')
+    expect(progress_panel).to_be_visible()
+    expect(page.locator('#query-progress-title')).to_have_text('查询进度 · 等待首次查询')
+    initial_progress_height = progress_panel.bounding_box()['height']
     expect(stats.locator('#people-count')).to_be_hidden()
     stats_height = stats.bounding_box()['height']
     initial_requests[0].continue_()
@@ -38,7 +44,11 @@ def exercise(page, root, reduced):
     expect(page.locator('.person-card:visible')).to_have_count(2)
     expect(stats.locator('#people-count')).to_be_visible()
     expect(stats.locator('#people-count')).to_have_text('3')
+    expect(page.locator('.brand-icon')).to_have_attribute('src', '/favicon.svg')
+    assert page.locator('.brand-icon').evaluate('img => img.complete && img.naturalWidth > 0')
+    assert page.locator('.brand-icon').get_attribute('src') == page.locator('link[rel="icon"]').get_attribute('href')
     assert stats.bounding_box()['height'] == stats_height
+    assert progress_panel.bounding_box()['height'] == initial_progress_height
     assert page.evaluate('window.cardAnimations') == 0
     unfinished = page.locator('[data-filter="unfinished"]')
     expect(page.locator('.filter-button')).to_have_count(3)
@@ -55,7 +65,7 @@ def exercise(page, root, reduced):
       }
       document.querySelector('[data-tab="accounts"]').click();
     }''')
-    expect(page.locator('main > section:visible')).to_have_count(1)
+    expect(page.locator('main > section:visible').filter(has_not=page.locator('#query-progress-title'))).to_have_count(1)
     expect(page.locator('#accounts-tab')).to_be_visible()
     if reduced:
         assert page.evaluate('document.getAnimations().length') == 0
@@ -344,6 +354,106 @@ def exercise(page, root, reduced):
     assert 0 <= box['y'] and box['y'] + box['height'] <= 844
     page.keyboard.press('Escape')
     expect(mobile_card.locator('.remove')).to_be_focused()
+    # Query errors stay visible while paused and disappear after recovery.
+    snapshot = server.payload()
+    person = snapshot['state']['people'][0]
+    person.update(matched_target=None, completed=False, follow_status=None, follow_jobs=[])
+    diagnostic = public_error({'stage': 'homepage_access', 'type': 'TimeoutError'})
+    person['query_errors'] = [dict(diagnostic, target='example_alpha', consecutive_errors=3,
+                                   next_retry_epoch=time.time() + 1200)]
+    snapshot['state'].update(paused=False, search_account_errors={actor_ids[0]: 'TimeoutError'},
+                             search_account_error_details={actor_ids[0]: diagnostic})
+    # The interaction checks above intentionally leave unsaved drafts open.
+    page = page.context.new_page()
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.on('dialog', dismiss_native_dialog)
+    page.route('**/api/state', lambda route: route.fulfill(json=snapshot))
+    page.goto(root)
+    search_order = page.locator('#search-account-order')
+    error_card = page.locator('.person-card').filter(has=page.locator('.query-error'))
+    expect(error_card.locator('.person-status')).to_have_text('查询异常')
+    expect(error_card).to_contain_text('读取首页正文超时')
+    expect(error_card).to_contain_text('连续失败 3 次')
+    expect(error_card).to_contain_text('下次重试')
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.locator('[data-tab="accounts"]').click()
+    expect(search_order).to_contain_text('读取首页正文超时')
+    snapshot['state']['paused'] = True
+    page.reload()
+    expect(error_card.locator('.person-status')).to_have_text('已暂停')
+    expect(error_card).to_contain_text('监测已暂停，恢复后再重试')
+    snapshot['state']['paused'] = False
+    person['query_errors'] = []
+    snapshot['state']['search_account_errors'] = {}
+    snapshot['state']['search_account_error_details'] = {}
+    page.reload()
+    expect(page.locator('.query-error')).to_have_count(0)
+    # One manual request runs while paused and never toggles automatic polling.
+    snapshot['jobs'] = []
+    snapshot['state']['paused'] = False
+    page.reload()
+    manual_requests = []
+    def manual_control(route):
+        manual_requests.append(route.request.post_data_json)
+        if route.request.post_data_json['action'] == 'pause':
+            snapshot['state']['paused'] = True
+            route.fulfill(json={'ok': True, 'message': '已暂停后续调度，正在执行的步骤将安全收尾'})
+            return
+        snapshot['jobs'] = [{'id': 'manual-once', 'title': '立即查询一次', 'scope': 'people', 'status': 'running', 'started_at': time.time()}]
+        route.fulfill(status=202, json={'ok': True, 'job_id': 'manual-once'})
+    page.route('**/api/control', manual_control)
+    manual_button = page.locator('#check-now')
+    expect(manual_button).to_be_enabled()
+    page.locator('.person-card .name').first.fill('Unsaved draft')
+    manual_button.click()
+    expect(page.locator('#toast.show')).to_have_text('请先保存配置，再立即查询')
+    assert not manual_requests
+    # A fresh tab keeps the original unsaved-draft protection intact.
+    manual_page = page.context.new_page()
+    manual_page.set_viewport_size({'width': 390, 'height': 844})
+    manual_page.route('**/api/state', lambda route: route.fulfill(json=snapshot))
+    manual_page.route('**/api/control', manual_control)
+    manual_page.goto(root)
+    expect(manual_page.locator('#query-progress')).to_be_visible()
+    expect(manual_page.locator('#query-progress-title')).to_have_text('查询进度 · 等待首次查询')
+    progress_height = manual_page.locator('#query-progress').bounding_box()['height']
+    stats_top = manual_page.locator('.stats').bounding_box()['y']
+    manual_button = manual_page.locator('#check-now')
+    manual_button.dblclick()
+    expect(manual_button).to_have_text('正在查询…')
+    expect(manual_button).to_be_disabled()
+    assert manual_requests == [{'action': 'check-now'}]
+    expect(manual_page.locator('#query-progress-title')).to_have_text('手动查询 · 等待调度器启动')
+    assert manual_page.locator('#query-progress').bounding_box()['height'] == progress_height
+    assert manual_page.locator('.stats').bounding_box()['y'] == stats_top
+    snapshot['state']['query_progress'] = {'job_id': 'manual-once', 'manual': True, 'status': 'running',
+        'started_at': time.time()-70, 'stage_started_at': time.time()-60, 'stage_label': '读取首页正文',
+        'stage_budget_seconds': 15, 'target': 'example_alpha', 'total': 1, 'completed': 0}
+    expect(manual_page.locator('#query-progress-title')).to_contain_text('读取首页正文', timeout=10000)
+    expect(manual_page.locator('#query-progress-title')).to_have_text('手动查询 · 读取首页正文')
+    assert manual_page.locator('#query-progress').bounding_box()['height'] == progress_height
+    assert manual_page.locator('.stats').bounding_box()['y'] == stats_top
+    expect(manual_page.locator('#query-progress-elapsed')).to_contain_text('已用 1 分')
+    expect(manual_page.locator('#query-progress-hint')).to_contain_text('正在等待浏览器响应')
+    manual_page.locator('#pause').click()
+    expect(manual_page.locator('#resume')).to_be_visible()
+    expect(manual_page.locator('#query-progress-hint')).to_contain_text('当前步骤正在安全收尾')
+    assert manual_requests[-1]['action'] == 'pause'
+    snapshot['jobs'][0].update(status='succeeded', message='本轮完成：查询成功 1 个，失败 0 个，发现 0 个')
+    snapshot['state']['query_progress'].update(status='done', stage_label='本轮已完成', completed=1,
+        successful=1, finished_at=time.time())
+    expect(manual_button).to_have_text('立即查询一次', timeout=10000)
+    expect(manual_button).to_be_enabled()
+    expect(manual_page.locator('#toast.show')).to_contain_text('查询成功 1 个')
+    expect(manual_page.locator('#resume')).to_be_visible()
+    expect(manual_page.locator('#pause')).to_be_hidden()
+    assert manual_page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    snapshot['state']['query_progress'].update(manual=False, job_id=None, stage_label='打开搜索页面', status='running',
+        stage_started_at=time.time(), updated_at=time.time())
+    expect(manual_page.locator('#query-progress-title')).to_have_text('自动查询 · 打开搜索页面', timeout=10000)
+    assert manual_page.locator('#query-progress').bounding_box()['height'] == progress_height
+    assert manual_page.locator('.stats').bounding_box()['y'] == stats_top
     assert not native_dialogs, native_dialogs
     assert not errors, errors
 
@@ -369,6 +479,27 @@ def main():
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(channel='chrome', headless=True)
                 try:
+                    context = browser.new_context()
+                    try:
+                        page = context.new_page()
+                        page.set_content('<html><body>ready after delay</body></html>')
+                        page.evaluate('''() => {
+                            const body = document.body;
+                            body.remove();
+                            setTimeout(() => document.documentElement.append(body), 5500);
+                        }''')
+                        assert watch.visible_body(page) == 'ready after delay'
+                        assert page._xhs_body_attempts == 2
+                        page.evaluate("document.body.textContent = 'IP存在风险'")
+                        try:
+                            watch.check_gate(page)
+                        except watch.SitePaused as error:
+                            assert str(error) == 'ip_risk'
+                        else:
+                            raise AssertionError('risk gate was ignored')
+                        print('Delayed body recovered; platform risk still blocks queries.')
+                    finally:
+                        context.close()
                     for reduced in [False, True]:
                         server.write(server.RUNTIME / 'secrets.json', {
                             'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/TEST_ONLY',

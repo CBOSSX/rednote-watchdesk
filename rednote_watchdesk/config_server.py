@@ -16,6 +16,8 @@ import urllib.parse
 from rednote_watchdesk.paths import RUNTIME, PROJECT, MONITOR_LABEL
 from rednote_watchdesk.watch_config import SEARCH_ACCOUNT_FIELDS, normalize, signature
 from rednote_watchdesk import accounts
+from rednote_watchdesk.query_diagnostics import public_error
+from rednote_watchdesk import pause_control, query_progress
 
 TOKEN = secrets.token_urlsafe(32)
 WAKE = threading.Event()
@@ -59,7 +61,7 @@ def wake():
 
 def payload():
     cfg = read(RUNTIME/'config.json')
-    state = read(RUNTIME/'data/state.json')
+    state = pause_control.apply(RUNTIME/'data', read(RUNTIME/'data/state.json'))
     heartbeat = read(RUNTIME/'data/heartbeat.json')
     notice = read(RUNTIME/'secrets.json')
     plan = accounts.ui_config(cfg, RUNTIME/'data')
@@ -72,13 +74,21 @@ def payload():
         matched = saved.get('matched_target') or next((t for t in person['candidates'] if state.get('targets',{}).get(t,{}).get('found')),None)
         entry = state.get('targets',{}).get(matched,{}) if matched else {}
         checks = [state.get('targets',{}).get(t,{}) for t in person['candidates']]
+        query_errors = []
+        if not matched:
+            for target, check in zip(person['candidates'], checks):
+                if check.get('last_error'):
+                    detail = check.get('last_error_detail') or {'type': check['last_error']}
+                    query_errors.append(dict(public_error(detail), target=target,
+                                             consecutive_errors=check.get('consecutive_errors', 0),
+                                             next_retry_epoch=check.get('next_retry_epoch')))
         jobs = []
         for aid in person['follow_account_ids']:
             job = entry.get('follows', {}).get(aid, entry.get('follow', {}) if aid == accounts.LEGACY_FOLLOW else {})
             jobs.append({'account_id': aid, 'status': job.get('status', 'pending' if matched else 'waiting_match'), 'reason': job.get('reason')})
         status = next((status for status in ['failed','blocked','retry','running','pending','succeeded'] if any(j['status'] == status for j in jobs)), None)
         people.append({'id':person['id'],'matched_target':matched,'completed':saved.get('completed',entry.get('completed',False)),
-                       'result':entry.get('found'),'follow_status':status,'follow_jobs':jobs,
+                       'result':entry.get('found'),'follow_status':status,'follow_jobs':jobs,'query_errors':query_errors,
                        'last_checked_at':max((e.get('last_checked_at','') for e in checks),default='')})
     account_list = accounts.list_accounts(RUNTIME/'data')
     paused_accounts = dict(state.get('follow_paused_accounts', {}))
@@ -96,8 +106,11 @@ def payload():
                      'follow_paused':state.get('follow_paused',False),'people':people,
                      'heartbeat_at':heartbeat.get('updated_at'),'worker_fault':heartbeat.get('worker_fault'),
                      'pending_notifications':bool(state.get('pending')),
+                     'query_progress':query_progress.read(RUNTIME/'data'),
+                     'query_timings':query_progress.timings(RUNTIME/'data'),
                      'active_search_account_id':search.get('active_account_id'),
-                     'search_account_errors':search.get('errors', {})},
+                     'search_account_errors':search.get('errors', {}),
+                     'search_account_error_details':{aid:public_error(detail) for aid, detail in search.get('error_details', {}).items()}},
             'accounts':account_list,'notifications':{'configured':bool(notice.get('webhook_url')),
                 'signing_configured':bool(notice.get('signing_secret')),'mention_users':notice.get('mention_users',[])},'jobs':jobs}
 
@@ -185,11 +198,15 @@ def start_job(command, *, fresh=False, title='操作', account_id=None, scope='p
             raise RuntimeError('已有操作正在进行，请完成后再试')
         jid = secrets.token_hex(8)
         JOBS[jid] = {'id':jid,'title':title,'scope':scope,'account_id':account_id,'status':'running','started_at':time.time()}
+        pause_token = pause_control.token(RUNTIME/'data')
         for old_id in list(JOBS)[:-30]:
             if JOBS[old_id]['status'] != 'running':
                 del JOBS[old_id]
     def run():
-        argv=[sys.executable,'-m','rednote_watchdesk.watch',command]
+        argv=([sys.executable,'-m','rednote_watchdesk.tick','--now'] if command == 'check-now' else
+              [sys.executable,'-m','rednote_watchdesk.watch',command])
+        if command == 'check-now':
+            argv += ['--pause-token', pause_token]
         if account_id is not None:
             argv += ['--account-id',account_id]
         if command in ('login','follow-login','account-login'):
@@ -199,16 +216,29 @@ def start_job(command, *, fresh=False, title='操作', account_id=None, scope='p
         try:
             with log.open('w') as out:
                 log.chmod(0o600)
-                proc=subprocess.run(argv,stdout=out,stderr=subprocess.STDOUT,timeout=620,cwd=PROJECT)
-            busy = log.read_text().strip()=='BUSY'
+                # tick owns the timeout and terminates its browser worker process group.
+                proc=subprocess.run(argv,stdout=out,stderr=subprocess.STDOUT,
+                                    timeout=None if command == 'check-now' else 620,cwd=PROJECT,
+                                    env=dict(os.environ, REDNOTE_WATCHDESK_JOB_ID=jid) if command == 'check-now' else None)
+            output = log.read_text().strip()
+            busy = output=='BUSY'
             success=proc.returncode==0 and not busy
             failure = '操作未完成；请确认登录的是此账号。同一账号无需重复添加，更换身份请新增账号' if command == 'account-login' else '操作未完成，请检查配置和本机日志后重试'
             message='操作完成' if success else '当前任务正忙，请稍后重试' if busy else failure
+            if command == 'check-now' and not busy:
+                try:
+                    summary = json.loads(output.splitlines()[-1])['manual_check']
+                    message = summary.get('message') or ('本轮完成：查询成功 ' + str(summary['successful']) +
+                        ' 个，失败 ' + str(summary['failed']) + ' 个，发现 ' + str(summary['found']) + ' 个')
+                except (ValueError, KeyError, IndexError, TypeError):
+                    message = '本轮调度未完成，请检查后台运行状态和本机日志'
+                    success = False
         except Exception:
             success,message=False,'操作未完成，请稍后重试'
         with JOB_LOCK:
             JOBS[jid].update(status='succeeded' if success else 'failed',message=message,finished_at=time.time())
-        wake()
+        if command != 'check-now':
+            wake()
     threading.Thread(target=run,daemon=True).start()
     return jid
 
@@ -233,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.valid_host():return self.respond(403,{'error':'仅支持本机访问'})
         try:
             if self.path=='/api/state':return self.respond(200,payload())
-            assets={'/':('index.html','text/html; charset=utf-8'),'/js/app.js':('js/app.js','application/javascript; charset=utf-8'),'/js/motion.js':('js/motion.js','application/javascript; charset=utf-8'),'/js/accounts.js':('js/accounts.js','application/javascript; charset=utf-8'),'/css/style.css':('css/style.css','text/css; charset=utf-8'),'/css/motion.css':('css/motion.css','text/css; charset=utf-8')}
+            assets={'/':('index.html','text/html; charset=utf-8'),'/favicon.svg':('favicon.svg','image/svg+xml'),'/js/app.js':('js/app.js','application/javascript; charset=utf-8'),'/js/motion.js':('js/motion.js','application/javascript; charset=utf-8'),'/js/accounts.js':('js/accounts.js','application/javascript; charset=utf-8'),'/css/style.css':('css/style.css','text/css; charset=utf-8'),'/css/motion.css':('css/motion.css','text/css; charset=utf-8')}
             if self.path not in assets:return self.respond(404,{'error':'未找到'})
             name,mime=assets[self.path];text=(PROJECT/'web'/name).read_text()
             if name=='index.html':text=text.replace('__CSRF_TOKEN__',TOKEN)
@@ -267,12 +297,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(202,{'ok':True,'job_id':jid})
             if self.path=='/api/control':
                 action=body.get('action')
-                if action not in ('pause','resume','follow-resume','test-webhook'):raise ValueError('操作无效')
+                if action not in ('pause','resume','follow-resume','test-webhook','check-now'):raise ValueError('操作无效')
+                if action == 'pause':
+                    pause_control.request_pause(RUNTIME/'data')
+                    wake()
+                    return self.respond(200,{'ok':True,'message':'已暂停后续调度，正在执行的步骤将安全收尾'})
+                if action == 'check-now':
+                    plan = accounts.ui_config(read(RUNTIME/'config.json'), RUNTIME/'data')
+                    if not plan['people']:raise ValueError('请先保存监控目标')
+                    if not plan['search_account_ids']:raise ValueError('请先选择搜索账号并保存配置')
                 aid=body.get('account_id') if action=='follow-resume' else None
                 if action=='follow-resume':
                     accounts.require_account(RUNTIME/'data', aid)
                 scope='settings' if action=='test-webhook' else 'accounts' if action=='follow-resume' else 'people'
-                return self.respond(202,{'ok':True,'job_id':start_job(action,account_id=aid,scope=scope,title={'pause':'暂停监测','resume':'恢复监测','follow-resume':'恢复此账号的关注任务','test-webhook':'测试飞书通知'}[action])})
+                return self.respond(202,{'ok':True,'job_id':start_job(action,account_id=aid,scope=scope,title={'pause':'暂停监测','resume':'恢复监测','follow-resume':'恢复此账号的关注任务','test-webhook':'测试飞书通知','check-now':'立即查询一次'}[action])})
             self.respond(404,{'error':'未找到'})
         except RuntimeError as error:self.respond(409,{'error':str(error)})
         except (ValueError,TypeError,KeyError) as error:self.respond(400,{'error':str(error)})

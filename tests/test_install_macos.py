@@ -35,6 +35,7 @@ class InstallerTests(unittest.TestCase):
                     payload = plistlib.loads(path.read_bytes())
                     self.assertEqual(payload['ProgramArguments'], expected[role])
                     self.assertEqual(payload['WorkingDirectory'], str(install_macos.PROJECT))
+                    self.assertEqual(payload['ProcessType'], 'Background' if role == 'watchdog' else 'Interactive')
                     self.assertEqual(payload['EnvironmentVariables']['REDNOTE_WATCHDESK_HOME'], str(runtime))
                 self.assertEqual(sum(call.args[0][1] == 'bootstrap' for call in launchctl.call_args_list), 3)
                 with patch.object(install_macos.sys, 'argv', ['install_macos', '--uninstall']):

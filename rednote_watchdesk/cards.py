@@ -3,6 +3,7 @@ import datetime as dt
 from html import escape
 import re
 from rednote_watchdesk.mentions import mention_tags
+from rednote_watchdesk.query_diagnostics import public_error
 
 STYLES = {
     'found': ('发现账号', 'green', '小红书号已精确匹配', '请确认本人及店铺归属后关注；此账号通知成功后结束监测，其他账号继续。'),
@@ -93,6 +94,12 @@ def notification_payload(text, secret, event=None, source='monitor'):
     elif kind not in ('found', 'query_recovery', 'recovery', 'follow_success', 'follow_ready'):
         detail = re.sub(r'^【[^】]+】\s*', '', text).strip()
         info.append(markdown("<font color='grey'>说明</font>\n" + safe_text(detail)))
+    if event.get('diagnostic'):
+        diagnostic = public_error(event['diagnostic'])
+        info.append(markdown("<font color='grey'>失败阶段</font>\n" + safe_text(diagnostic['stage_label'])))
+        info.append(markdown("<font color='grey'>具体错误</font>\n" + safe_text(diagnostic['message'])))
+    if event.get('next_retry_epoch'):
+        info.append(markdown("<font color='grey'>下次重试（北京时间）</font>\n" + local_time(event['next_retry_epoch'])))
     if source == 'watchdog' and kind == 'recovery':
         previous = event.get('previous_reason')
         if not previous:

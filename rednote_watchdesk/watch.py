@@ -24,6 +24,8 @@ from rednote_watchdesk.cards import notification_payload
 from rednote_watchdesk.paths import RUNTIME
 from rednote_watchdesk.watch_config import targets as plan_targets, normalize, signature
 from rednote_watchdesk.group_state import apply_people, sync_people, complete_people
+from rednote_watchdesk.query_diagnostics import describe, safe_detail, safe_url
+from rednote_watchdesk import pause_control, query_progress
 
 ROOT = RUNTIME
 DATA = ROOT / "data"
@@ -35,6 +37,12 @@ RISK = ("安全限制", "访问过于频繁", "操作过于频繁", "操作频�
 EMPTY = ("没有找到相关用户", "暂无相关用户", "暂无搜索结果", "未找到相关用户", "没有找到你想要的", "没有搜到相关")
 LOG = logging.getLogger("xhs-watch")
 SEARCH_ACCOUNT_BLOCKS = {'login_required', 'search_account_not_ready', 'search_account_mismatch'}
+_progress = None
+
+
+def report_progress(**fields):
+    if _progress is not None:
+        _progress.update(**fields)
 
 
 def now():
@@ -44,10 +52,13 @@ def now():
 def read_json(path, default=None):
     if not path.exists():
         return {} if default is None else default
-    return json.loads(path.read_text())
+    value = json.loads(path.read_text())
+    return pause_control.apply(DATA, value) if path == STATE else value
 
 
 def write_json(path, obj):
+    if path == STATE:
+        pause_control.apply(DATA, obj)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(path.name + ".tmp." + str(os.getpid()))
     with tmp.open("w") as f:
@@ -87,12 +98,38 @@ class SitePaused(Exception):
     pass
 
 
-def visible_body(page):
-    return page.locator("body").inner_text(timeout=5000)
+def visible_body(page, retry=True):
+    timeouts = (5000, 10000) if retry else (5000,)
+    for attempt, timeout in enumerate(timeouts, 1):
+        previous = getattr(page, '_xhs_body_attempts', 0)
+        page._xhs_body_attempts = max(previous if isinstance(previous, int) else 0, attempt)
+        try:
+            return page.locator("body").inner_text(timeout=timeout)
+        except Exception as error:
+            if 'Timeout' not in type(error).__name__ or attempt == len(timeouts):
+                raise
+            LOG.info('body_read_retry stage=%s attempt=%s', getattr(page, '_xhs_stage', 'unknown'), attempt)
+            report_progress(body_retry=True)
 
 
-def check_gate(page):
-    text = visible_body(page)
+def set_stage(page, stage):
+    page._xhs_stage = stage
+    page._xhs_stage_started = time.monotonic()
+    page._xhs_body_attempts = 0
+    report_progress(stage=stage, body_retry=False)
+
+
+def navigate(page, url, stage):
+    set_stage(page, stage)
+    page._xhs_http_status = None
+    response = page.goto(url, wait_until='domcontentloaded', timeout=45000)
+    page._xhs_http_status = response.status if response else None
+    check_response(response)
+    return response
+
+
+def check_gate(page, retry_body=True):
+    text = visible_body(page, retry=retry_body)
     if any(word in text for word in IP_RISK):
         raise SitePaused("ip_risk")
     if any(word in text for word in RISK):
@@ -117,15 +154,25 @@ def browser_page(headed=False, account_id=None):
         if not account.get("profile_url"):
             raise SitePaused("search_account_not_ready")
         with browser(DATA, account_id, headed) as page:
-            response = page.goto("https://www.xiaohongshu.com/explore", wait_until="domcontentloaded", timeout=45000)
-            check_response(response)
-            page.wait_for_timeout(1500)
-            check_gate(page)
-            identities = page.locator('a[href*="/user/profile/"]').evaluate_all(
-                "els=>els.filter(e=>e.innerText.trim()==='我').map(e=>e.href.split('?')[0])")
-            if set(identities) != {account["profile_url"]}:
-                raise SitePaused("search_account_mismatch")
-            yield page
+            try:
+                navigate(page, 'https://www.xiaohongshu.com/explore', 'navigate_home')
+                page.wait_for_timeout(1500)
+                set_stage(page, 'homepage_access')
+                check_gate(page)
+                set_stage(page, 'verify_identity')
+                identities = page.locator('a[href*="/user/profile/"]').evaluate_all(
+                    "els=>els.filter(e=>e.innerText.trim()==='我').map(e=>e.href.split('?')[0])")
+                if set(identities) != {account["profile_url"]}:
+                    raise SitePaused("search_account_mismatch")
+            except Exception as error:
+                # Capture while the page is still alive; enter_context otherwise loses it.
+                error._xhs_diagnostic = record_diagnostic(page, None, error)
+                report_progress(stage='closing_browser')
+                raise
+            try:
+                yield page
+            finally:
+                report_progress(stage='closing_browser')
         return
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
@@ -140,6 +187,7 @@ def browser_page(headed=False, account_id=None):
         try:
             yield page
         finally:
+            report_progress(stage='closing_browser')
             context.close()
 
 
@@ -152,7 +200,7 @@ def search(page, target):
         # A login dialog or challenge can appear while a click/navigation times out.
         # Recheck visible gates before treating the failure as transient.
         try:
-            check_gate(page)
+            check_gate(page, retry_body=False)
         except SitePaused:
             raise
         except Exception:
@@ -165,20 +213,20 @@ def check_response(response):
         raise SitePaused("login_required")
     if response and response.status in (403, 429):
         raise SitePaused("http_" + str(response.status))
+    if response and response.status >= 400:
+        raise RuntimeError('http_' + str(response.status))
 
 
 def search_users(page, target):
-    page._xhs_stage = "navigate_search"
     url = "https://www.xiaohongshu.com/search_result_ai?" + urllib.parse.urlencode(
         {"keyword": target, "source": "web_explore_feed"})
-    response = page.goto(url, wait_until="domcontentloaded", timeout=45000)
-    check_response(response)
+    navigate(page, url, 'navigate_search')
     page.wait_for_timeout(2000)
-    page._xhs_stage = "check_access"
+    set_stage(page, 'check_access')
     check_gate(page)
-    page._xhs_stage = "select_users"
+    set_stage(page, 'select_users')
     page.get_by_text("用户", exact=True).click(timeout=15000)
-    page._xhs_stage = "wait_user_results"
+    set_stage(page, 'wait_user_results')
     deadline = time.monotonic() + 40
     rows = []
     while time.monotonic() < deadline:
@@ -303,6 +351,7 @@ def deliver(state):
         if not pending:
             return True
         try:
+            report_progress(stage='deliver_notifications')
             webhook(pending['text'], event=pending)
         except Exception as error:
             state['delivery_error'] = str(error)
@@ -337,14 +386,46 @@ def deliver(state):
 
 
 def record_diagnostic(page, target, error):
-    detail = {'target': target, 'stage': getattr(page, '_xhs_stage', 'launch_browser'),
-              'type': type(error).__name__, 'detail': str(error)[:1500], 'checked_at': now()}
+    report_progress(stage='diagnostics')
+    detail = dict(getattr(error, '_xhs_diagnostic', {}) or {})
+    if not detail:
+        detail = {'stage': getattr(page, '_xhs_stage', 'launch_browser'),
+                  'type': type(error).__name__, 'detail': safe_detail(error), 'checked_at': now()}
+        if page is not None:
+            detail.update(url=safe_url(getattr(page, 'url', '')),
+                          http_status=getattr(page, '_xhs_http_status', None),
+                          body_attempts=getattr(page, '_xhs_body_attempts', 0))
+            started = getattr(page, '_xhs_stage_started', None)
+            if isinstance(started, (float, int)):
+                detail['elapsed_seconds'] = round(time.monotonic() - started, 2)
+            with contextlib.suppress(Exception):
+                detail['page_state'] = page.locator('html').evaluate(
+                    "() => ({ready_state:document.readyState,body_present:!!document.body})", timeout=1000)
+        detail.update(describe(detail))
+    detail['target'] = target
+    if page is None and target and detail.get('screenshot') == 'last-error.png':
+        # Initialization captured the image before the caller knew the target.
+        detail.pop('screenshot')
+        with contextlib.suppress(OSError):
+            filename = 'last-error-' + target + '.png'
+            path = DATA / filename
+            path.write_bytes((DATA / 'last-error.png').read_bytes())
+            path.chmod(0o600)
+            detail['screenshot'] = filename
+    # Do not let an older screenshot masquerade as evidence for this failure.
+    if page is not None:
+        detail.pop('screenshot', None)
+        with contextlib.suppress(Exception):
+            filename = 'last-error-' + target + '.png' if target else 'last-error.png'
+            path = DATA / filename
+            path.unlink(missing_ok=True)
+            page.screenshot(path=str(path), timeout=3000)
+            path.chmod(0o600)
+            detail['screenshot'] = filename
     with contextlib.suppress(Exception):
         write_json(DATA / 'last-error-detail.json', detail)
-        write_json(DATA / ('last-error-' + target + '.json'), detail)
-        if page:
-            page.screenshot(path=str(DATA / 'last-error.png'), timeout=5000)
-            page.screenshot(path=str(DATA / ('last-error-' + target + '.png')), timeout=5000)
+        if target:
+            write_json(DATA / ('last-error-' + target + '.json'), detail)
     return detail
 
 
@@ -358,22 +439,25 @@ def config_unchanged(config):
         return False
 
 
-def finish_follows(state, config):
+def finish_follows(state, config, cancelled=lambda: False):
     # Serialize config saves against browser writes, so disabling follow cannot race a click.
     with (DATA/'config.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if not config_unchanged(config):
+        if cancelled() or not config_unchanged(config):
             return
+        report_progress(stage='auto_follow')
         run_follow_jobs(state, config, data=DATA, enqueue=enqueue,
-                        save=lambda s: write_json(STATE, s), gate=check_gate, site_paused=SitePaused)
+                        save=lambda s: write_json(STATE, s), gate=check_gate, site_paused=SitePaused,
+                        cancelled=cancelled)
     sync_completion(state)
     write_json(STATE, state)
 
 
-def search_batch(config, account_ids, due, state=None):
+def search_batch(config, account_ids, due, state=None, force=False, cancelled=lambda: False):
     """Yield results in target order, keeping the failed target at the cursor on failover."""
     search_state = state.get('search', {}) if state is not None else {}
     errors = search_state.setdefault('errors', {})
+    account_details = search_state.setdefault('error_details', {})
     active = search_state.get('active_account_id')
     if active in account_ids:
         index = account_ids.index(active)
@@ -383,22 +467,25 @@ def search_batch(config, account_ids, due, state=None):
     retryable = None
 
     def eligible(t):
-        return state is None or query_due(state['targets'][t], time.time(), config.get('interval_seconds', 1800))
+        return state is None or query_due(state['targets'][t], time.time(), config.get('interval_seconds', 1800), force=force)
 
-    for account_id in account_ids:
-        if state is not None and not config_unchanged(config):
+    for account_index, account_id in enumerate(account_ids, 1):
+        if cancelled() or (state is not None and not config_unchanged(config)):
             return
         with contextlib.ExitStack() as browser:
             try:
+                report_progress(stage='launch_browser', target=target, account_id=account_id,
+                                account_index=account_index, account_total=len(account_ids))
                 page = browser.enter_context(browser_page(account_id=account_id) if account_id else browser_page())
             except Exception as error:
                 failure = (error, record_diagnostic(None, target, error))
             else:
                 while target is not None:
-                    if state is not None and not config_unchanged(config):
+                    if cancelled() or (state is not None and not config_unchanged(config)):
                         return
                     if eligible(target):
                         try:
+                            report_progress(target=target)
                             outcome = search(page, target)
                         except Exception as error:
                             failure = (error, record_diagnostic(page, target, error))
@@ -409,6 +496,7 @@ def search_batch(config, account_ids, due, state=None):
                             if account_id:
                                 search_state['active_account_id'] = account_id
                                 errors.pop(account_id, None)
+                                account_details.pop(account_id, None)
                             yield target, outcome, None
                     target = next(candidates, None)
                 if target is None:
@@ -418,9 +506,10 @@ def search_batch(config, account_ids, due, state=None):
         if account_id:
             search_state.pop('active_account_id', None)
             errors[account_id] = reason
+            account_details[account_id] = detail
             if state is not None:
-                LOG.warning('search_account_failed account=%s target=%s stage=%s reason=%s',
-                            account_id, target, detail['stage'], reason)
+                LOG.warning('search_account_failed account=%s target=%s stage=%s code=%s reason=%s',
+                            account_id, target, detail['stage'], detail['code'], reason)
                 write_json(STATE, state)
         if isinstance(error, SitePaused):
             if reason not in SEARCH_ACCOUNT_BLOCKS:
@@ -439,7 +528,14 @@ def search_batch(config, account_ids, due, state=None):
                 yield target, None, failure
 
 
-def run_check(config, dry_run=False, target=None):
+def run_check(config, dry_run=False, target=None, force=False, pause_token=None):
+    global _progress
+    _progress = None
+    initial_pause = pause_control.token(DATA) if pause_token is None else pause_token
+
+    def cancelled():
+        current = pause_control.token(DATA)
+        return bool(current and current != initial_pause)
     account_ids = normalize(config).get('search_account_ids', [None])
     if dry_run:
         if not account_ids:
@@ -457,26 +553,55 @@ def run_check(config, dry_run=False, target=None):
         return 0
     state = migrate_state(read_json(STATE), config)
     write_json(STATE, state)
+    if force:
+        _progress = query_progress.Progress(DATA, manual=True)
+    manual_started = now()
+
+    def done(code, successful=0, failed=0, found=0, message=None):
+        global _progress
+        if force:
+            pause_control.apply(DATA, state)
+            summary = {'started_at': manual_started, 'finished_at': now(), 'successful': successful,
+                       'failed': failed, 'found': found, 'paused': state.get('paused', False)}
+            if message:
+                summary['message'] = message
+            state['manual_check'] = summary
+            write_json(STATE, state)
+            print(json.dumps({'manual_check': summary}, ensure_ascii=False), flush=True)
+        if _progress is not None:
+            _progress.finish(code, cancelled=cancelled())
+            _progress = None
+        return code
+
+    if cancelled():
+        return done(0, message='已暂停，本轮调度已取消')
     delivery_failed = False
     if state.get('pending'):
         delivery_failed = not deliver(state)
-    if state.get('paused') or state.get('completed'):
-        return 0
+    if (state.get('paused') and not force) or state.get('completed'):
+        return done(0, message='没有待查询目标，已完成的目标不会重复查询')
     current = time.time()
     interval = config.get('interval_seconds', 1800)
     due = [t for t in state['configured_targets']
-           if query_due(state['targets'][t], current, interval)]
+           if query_due(state['targets'][t], current, interval, force=force)]
+    if _progress is None and due:
+        _progress = query_progress.Progress(DATA)
+    report_progress(total=len(due))
+    if force and due and not account_ids:
+        return done(2, message='未配置搜索账号，请先在登录账号页面设置')
     if not due or not account_ids:
-        finish_follows(state, config)
+        finish_follows(state, config, cancelled=cancelled)
         if not delivery_failed:
             deliver(state)
-        return 0
+        return done(0, message='本轮调度完成，没有待查询目标')
     state['last_attempt_epoch'] = current
     write_json(STATE, state)
     outcomes = []
     successful = []
+    blocked = False
 
     def failed(t, error, detail):
+        nonlocal blocked
         entry = state['targets'][t]
         reason = str(error) if isinstance(error, SitePaused) else type(error).__name__
         entry.update(last_status='paused' if isinstance(error, SitePaused) else 'error',
@@ -484,22 +609,25 @@ def run_check(config, dry_run=False, target=None):
         entry['consecutive_errors'] = entry.get('consecutive_errors', 0) + 1
         state['last_error'] = reason
         outcomes.append('error')
-        LOG.warning('check_error target=%s stage=%s reason=%s', t, detail['stage'], reason)
+        LOG.warning('check_error target=%s stage=%s code=%s reason=%s http_status=%s body_attempts=%s',
+                    t, detail['stage'], detail['code'], reason, detail.get('http_status'), detail.get('body_attempts'))
         if isinstance(error, SitePaused):
+            blocked = True
             state.update(paused=True, pause_reason=reason)
-            enqueue(state, {'kind': 'attention', 'reason': reason, 'text': '【小红书账号监测】已暂停全部查询：' + reason +
+            enqueue(state, {'kind': 'attention', 'reason': reason, 'diagnostic': detail, 'text': '【小红书账号监测】已暂停全部查询：' + reason +
                 '。监听：' + '、'.join(state['configured_targets']) + '。请在本机检查或重新登录后恢复。'})
         else:
             delay = retry_delay(entry['consecutive_errors'])
             entry['next_retry_epoch'] = time.time() + delay
             if entry['consecutive_errors'] >= 3 and not entry.get('query_fault_notified'):
                 entry['query_fault_notified'] = True
-                enqueue(state, {'kind': 'query_fault', 'target': t, 'reason': reason, 'text':
+                enqueue(state, {'kind': 'query_fault', 'target': t, 'reason': reason, 'diagnostic': detail,
+                    'consecutive_errors': entry['consecutive_errors'], 'next_retry_epoch': entry['next_retry_epoch'], 'text':
                     '【小红书账号监测·查询异常】' + t + ' 连续3次查询失败：' + reason +
                     '，阶段：' + detail['stage'] + '。未暂停，继续自动重试；恢复成功后通知。'})
         write_json(STATE, state)
 
-    with contextlib.closing(search_batch(config, account_ids, due, state)) as batch:
+    with contextlib.closing(search_batch(config, account_ids, due, state, force=force, cancelled=cancelled)) as batch:
         for t, outcome, failure in batch:
             entry = state['targets'][t]
             entry['last_attempt_epoch'] = time.time()
@@ -527,19 +655,21 @@ def run_check(config, dry_run=False, target=None):
                 sync_completion(state)
                 write_json(STATE, state)
                 LOG.info('checked target=%s status=%s results=%s', t, outcome['status'], outcome['result_count'])
+            report_progress(stage='record_result', completed=len(outcomes), successful=len(successful),
+                            failed=outcomes.count('error'), found=outcomes.count('found'))
     if successful and state.pop('recovery_pending', False):
         enqueue(state, {'kind': 'recovery', 'text': '【小红书账号监测·已恢复】查询已验证成功：' +
             '、'.join(successful) + '。当前监听：' + '、'.join(state['configured_targets']) + '，约每半小时检查。'})
     if state.get('auto_follow_enabled') and not delivery_failed and state.get('pending'):
         delivery_failed = not deliver(state)
-    if not state.get('paused'):
-        finish_follows(state, config)
+    if (not state.get('paused') or force) and not blocked and not cancelled():
+        finish_follows(state, config, cancelled=cancelled)
     sync_completion(state)
     remaining = [t for t in state['configured_targets'] if not state['targets'][t].get('paused')
                  and not state['targets'][t].get('found') and not state['targets'][t].get('completed') and not state['targets'][t].get('suppressed_by')]
     if not remaining and not state['query_complete'] and not state['completed']:
         state.update(paused=True, pause_reason='all_targets_paused')
-    state['last_status'] = ('paused' if state.get('paused') else
+    state['last_status'] = ('paused' if blocked or (state.get('paused') and not force) else
         'partial_error' if 'error' in outcomes and successful else
         'error' if 'error' in outcomes else 'found' if 'found' in outcomes else 'not_found')
     state['last_checked_at'] = now()
@@ -549,7 +679,9 @@ def run_check(config, dry_run=False, target=None):
     write_json(STATE, state)
     if not delivery_failed:
         deliver(state)
-    return 2 if 'error' in outcomes else 0
+    return done(2 if 'error' in outcomes else 0, successful=len(successful),
+                failed=outcomes.count('error'), found=outcomes.count('found'),
+                message='已暂停，当前步骤已收尾，后续任务已停止' if cancelled() else None)
 
 
 def login(seconds, fresh=False):
@@ -613,12 +745,13 @@ def main():
     os.environ.setdefault("REDNOTE_WATCHDESK_HEALTH_DIR", str(HEALTH))
     DATA.mkdir(parents=True, exist_ok=True, mode=0o700)
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["check", "login", "status", "resume", "pause", "follow-login", "follow-resume", "test-webhook", "account-login"])
+    parser.add_argument("command", choices=["check", "check-now", "login", "status", "resume", "pause", "follow-login", "follow-resume", "test-webhook", "account-login"])
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--target")
     parser.add_argument("--seconds", type=int, default=600)
     parser.add_argument("--fresh-login", action="store_true")
     parser.add_argument("--account-id")
+    parser.add_argument('--pause-token')
     args = parser.parse_args()
     config = read_json(CONFIG)
     try:
@@ -653,6 +786,10 @@ def main():
         account['enrolled_at'] = now()
         write_json(account_path, account)
         print('BIG_ACCOUNT_LOGIN_OK', flush=True)
+        return 0
+    if args.command == 'pause':
+        pause_control.request_pause(DATA)
+        print('PAUSE', flush=True)
         return 0
     with (DATA / "watch.lock").open("w") as lock:
         try:
@@ -708,14 +845,16 @@ def main():
                     entry.pop("next_retry_epoch", None)
                 state["consecutive_errors"] = 0
                 state.pop("last_attempt_epoch", None)
-            write_json(STATE, state)
+            with pause_control.control_lock(DATA):
+                pause_control.clear(DATA)
+                write_json(STATE, state)
             print(args.command.upper())
             return 0
         if args.command == "test-webhook":
             webhook("【小红书账号监测】通知链路测试成功。", event={"kind":"test","targets":targets})
             print("WEBHOOK_OK")
             return 0
-        return run_check(config, args.dry_run, args.target)
+        return run_check(config, args.dry_run, args.target, force=args.command == 'check-now', pause_token=args.pause_token)
 
 
 if __name__ == "__main__":

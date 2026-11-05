@@ -6,6 +6,7 @@ const csrf = $('meta[name="csrf-token"]').content;
 let latest = null, dirty = false, version = '', toastTimer, selectedFilter = 'unfinished';
 let currentTab = 'people', searchAccountIds = [];
 let activeNotices = new Set();
+let submittingCheck = false;
 const seenJobResults = new Set();
 const credentialEditing = {webhook: false, signing: false};
 const time = value => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '尚未运行';
@@ -63,6 +64,7 @@ function cardState(card) {
   if (state.completed) return {key: 'completed', label: '已完成', state};
   if (state.matched_target) return {key: 'matched', label: '已命中', state};
   if (latest.state.paused) return {key: 'paused', label: '已暂停', state};
+  if (state.query_errors?.length) return {key: 'attention', label: '查询异常', state};
   return {key: 'waiting', label: '等待命中', state};
 }
 function updateStats() {
@@ -227,6 +229,14 @@ function renderStatuses() {
         const link = document.createElement('a'); link.href = state.result.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '查看主页 ↗'; info.append(link);
       }
     } else if (state?.last_checked_at) { info.textContent = '上次查询 ' + time(state.last_checked_at); }
+    for (const error of state?.query_errors || []) {
+      const line = document.createElement('div'); line.className = 'query-error';
+      line.textContent = error.target + ' · ' + error.message + ' · 连续失败 ' + error.consecutive_errors + ' 次';
+      const retry = document.createElement('div');
+      retry.textContent = latest.state.paused ? '监测已暂停，恢复后再重试' :
+        error.next_retry_epoch ? '下次重试 ' + time(error.next_retry_epoch) : '等待恢复或下轮调度';
+      info.append(line, retry);
+    }
     for (const job of state?.follow_jobs || []) {
       if (job.status === 'waiting_match') continue;
       const line = document.createElement('div'); line.className = 'follow-task-status';
@@ -277,6 +287,60 @@ function renderSearchSelection() {
   });
 }
 
+const duration = seconds => seconds < 60 ? Math.floor(Math.max(0, seconds)) + ' 秒' :
+  Math.floor(seconds / 60) + ' 分 ' + Math.floor(seconds % 60) + ' 秒';
+function renderQueryProgress() {
+  if (!latest) return;
+  const job = latest.jobs.find(j => j.status === 'running' && j.title === '立即查询一次');
+  let progress = latest.state.query_progress;
+  if (job && progress?.job_id !== job.id) progress = {
+    manual: true, status: 'running', stage_label: '等待调度器启动', started_at: job.started_at, stage_started_at: job.started_at,
+    total: 0, completed: 0, stage_budget_seconds: 10
+  };
+  if (!progress?.started_at) {
+    $('#query-progress-title').textContent = '查询进度 · 等待首次查询';
+    $('#query-progress-title').title = '';
+    $('#query-progress-elapsed').textContent = '尚无记录';
+    $('#query-progress-detail').textContent = '暂无查询记录';
+    $('#query-progress-detail').title = '';
+    $('#query-progress-bar').max = 1;
+    $('#query-progress-bar').value = 0;
+    $('#query-progress-hint').textContent = !latest.config.people.length ?
+      '添加监控目标并保存后，自动和手动查询的进度都会显示在这里。' : latest.state.paused ?
+      '监测已暂停，可手动查询一次，或恢复自动监测。' : '自动调度或手动查询开始后，进度会在这里更新。';
+    return;
+  }
+  const finishedJob = latest.jobs.find(j => j.id === progress.job_id && j.status !== 'running');
+  if (progress.status === 'running' && (finishedJob || latest.state.worker_fault)) progress = {
+    ...progress, status: finishedJob?.status === 'succeeded' ? 'done' : 'failed',
+    stage_label: finishedJob?.status === 'succeeded' ? '本轮已结束' : '本轮未正常结束',
+    finished_at: finishedJob?.finished_at || progress.updated_at,
+  };
+  const running = progress.status === 'running';
+  const elapsed = (running ? Date.now() / 1000 : progress.finished_at || progress.updated_at) - progress.started_at;
+  const stageElapsed = Date.now() / 1000 - progress.stage_started_at;
+  $('#query-progress-title').textContent = (progress.manual ? '手动查询' : '自动查询') + ' · ' + progress.stage_label;
+  $('#query-progress-title').title = $('#query-progress-title').textContent;
+  $('#query-progress-elapsed').textContent = '已用 ' + duration(elapsed);
+  const account = latest.accounts.find(a => a.id === progress.account_id);
+  $('#query-progress-detail').textContent = [
+    running && progress.target ? '当前目标 ' + progress.target : '',
+    running && account ? '搜索账号 ' + accountName(account) : '',
+    progress.total ? '已检查 ' + progress.completed + ' / ' + progress.total : '',
+    !running ? '成功 ' + (progress.successful || 0) + '，失败 ' + (progress.failed || 0) + '，发现 ' + (progress.found || 0) : ''
+  ].filter(Boolean).join(' · ');
+  $('#query-progress-detail').title = $('#query-progress-detail').textContent;
+  $('#query-progress-bar').max = progress.total || 1;
+  $('#query-progress-bar').value = progress.completed || 0;
+  const stats = latest.state.query_timings || {};
+  const average = stats.normal_single_target_samples ? '近 ' + stats.normal_single_target_samples +
+    ' 次成功单目标查询平均 ' + duration(stats.normal_single_target_average_seconds) : '正在积累正常查询耗时样本';
+  $('#query-progress-hint').textContent = latest.state.paused && running ? '已暂停后续调度，当前步骤正在安全收尾。' :
+    running && progress.stage_budget_seconds && stageElapsed > progress.stage_budget_seconds + 5 ?
+    '此阶段已用 ' + duration(stageElapsed) + '，尚未返回，正在等待浏览器响应。可暂停后续任务。' :
+    running && progress.body_retry ? '页面正文读取超时，正在进行第二次等待。' : average;
+}
+
 function renderStatus({initial = false, saved = false} = {}) {
   renderNotificationFields();
   const state = latest.state, badge = $('#global-status'); badge.className = 'pill';
@@ -295,6 +359,9 @@ function renderStatus({initial = false, saved = false} = {}) {
   if (saved && !latest.pending_apply) messages.unshift('配置已保存');
   if (messages.length) toast(messages.join('。'));
   const running = latest.jobs.some(job => job.status === 'running');
+  const checking = latest.jobs.some(job => job.status === 'running' && job.title === '立即查询一次');
+  $('#check-now').disabled = submittingCheck || running || !latest.config.people.length || !latest.config.search_account_ids.length;
+  $('#check-now').textContent = submittingCheck || checking ? '正在查询…' : '立即查询一次';
   renderSearchSelection();
   renderAccounts(latest.accounts, running, {login: loginAccount, resume: aid => control('follow-resume', aid), rename: account => editAccountLabel(account, renameAccount)});
   for (const card of $$('.person-card')) {
@@ -303,6 +370,7 @@ function renderStatus({initial = false, saved = false} = {}) {
   }
   notifyJobResults(initial);
   renderStatuses(); updateStats();
+  renderQueryProgress();
   if (initial) {
     updateFilters();
     $('.stats').removeAttribute('aria-busy');
@@ -345,13 +413,24 @@ function addPerson() {
   scrollToNode(card);
 }
 async function control(action, accountId = null) {
-  try { await api('/api/control', {action, account_id: accountId}); toast('操作已提交'); setTimeout(() => load(), 600); }
+  try { const result = await api('/api/control', {action, account_id: accountId}); await load(); toast(result.message || '操作已提交'); }
   catch (error) { toast(error.message, true); }
 }
 $$('.nav').forEach(node => node.onclick = () => switchTab(node.dataset.tab));
 $('#add-person').onclick = addPerson; $('#add-empty').onclick = addPerson;
 $('#save-people').onclick = savePeople; $('#save-interval').onclick = savePeople;
 $('#pause').onclick = () => control('pause'); $('#resume').onclick = () => control('resume');
+$('#check-now').onclick = async () => {
+  if (dirty) { toast('请先保存配置，再立即查询', true); return; }
+  if (submittingCheck) return;
+  submittingCheck = true; $('#check-now').disabled = true; $('#check-now').textContent = '正在查询…';
+  try {
+    await api('/api/control', {action: 'check-now'});
+    toast('已提交单次查询，将按已保存配置处理通知和自动关注，轮询开关保持不变');
+    await load();
+  } catch (error) { toast(error.message, true); }
+  finally { submittingCheck = false; renderStatus(); }
+};
 $('#test-notifications').onclick = () => control('test-webhook');
 $('#target-search').addEventListener('input', applyFilters);
 $$('.filter-button').forEach(button => button.onclick = () => { selectedFilter = button.dataset.filter; applyFilters(); });
@@ -426,4 +505,4 @@ $('#save-notifications').onclick = async () => {
 };
 // Browsers require their own synchronous prompt when leaving with unsaved edits.
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
-load(); setInterval(() => load(), 5000);
+load(); setInterval(() => load(), 2000); setInterval(renderQueryProgress, 1000);

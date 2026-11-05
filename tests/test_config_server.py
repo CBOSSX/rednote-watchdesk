@@ -27,7 +27,7 @@ class ServerTests(unittest.TestCase):
   code,html=self.request('/');self.assertEqual(code,200)
   self.assertIn('type="module" src="/js/app.js"',html)
   self.assertNotIn('__CSRF_TOKEN__',html)
-  for asset in ['/js/app.js','/js/motion.js','/js/accounts.js','/css/style.css','/css/motion.css']:
+  for asset in ['/favicon.svg','/js/app.js','/js/motion.js','/js/accounts.js','/css/style.css','/css/motion.css']:
    code,body=self.request(asset);self.assertEqual(code,200,asset);self.assertTrue(body)
   for path in ['/js/../../secrets.json','/rednote_watchdesk/paths.py','/examples/secrets.example.json']:
    self.assertEqual(self.request(path)[0],404)
@@ -61,6 +61,26 @@ class ServerTests(unittest.TestCase):
    self.assertEqual(self.request('/api/control',{'action':'test-webhook'})[0],202)
    self.assertEqual(start.call_args.kwargs['scope'],'settings')
    self.assertEqual(self.request('/api/login',{'account_id':'../escape'})[0],400)
+ def test_manual_check_requires_saved_targets_and_search_account(self):
+  with patch.object(server,'start_job',return_value='manual-job') as start:
+   self.assertEqual(self.request('/api/control',{'action':'check-now'})[0],400)
+   server.write(self.root/'config.json',{'people':[{'id':'person','name':'Person','candidates':['example_person']}],'search_account_ids':[]})
+   self.assertEqual(self.request('/api/control',{'action':'check-now'})[0],400)
+   server.write(self.root/'config.json',{'target':'example_person'})
+   self.assertEqual(self.request('/api/control',{'action':'check-now'},**{'X-CSRF-Token':''})[0],403)
+   code,data=self.request('/api/control',{'action':'check-now'})
+   self.assertEqual(code,202);self.assertEqual(json.loads(data)['job_id'],'manual-job')
+   start.assert_called_once_with('check-now',account_id=None,scope='people',title='立即查询一次')
+ def test_pause_bypasses_running_job_and_worker_lock(self):
+  import fcntl
+  from rednote_watchdesk import pause_control
+  with patch.object(server,'JOBS',{'manual':{'id':'manual','status':'running'}}),patch.object(server,'wake') as wake,patch.object(server,'start_job') as start:
+   with (self.root/'data/watch.lock').open('a') as lock:
+    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    code,data=self.request('/api/control',{'action':'pause'})
+   self.assertEqual(code,200);self.assertIn('已暂停后续调度',json.loads(data)['message'])
+   self.assertTrue(pause_control.token(self.root/'data'));start.assert_not_called();wake.assert_called_once()
+   self.assertTrue(server.payload()['state']['paused'])
  def test_legacy_selection_survives_config_upgrade_without_enrolled_files(self):
   config={'interval_seconds':1800,'people':[{'id':'person','name':'Person','candidates':['example_person'],'auto_follow':True}]}
   server.write(self.root/'config.json',config)

@@ -5,13 +5,13 @@ def retry_delay(errors):
     return min(1800, 300 * 2 ** min(max(errors - 1, 0), 3))
 
 
-def query_due(entry, current, interval):
+def query_due(entry, current, interval, force=False):
     if entry.get('paused') or entry.get('completed') or entry.get('found') or entry.get('suppressed_by'):
         return False
     deadline = entry.get('next_retry_epoch')
     if deadline is None:
         deadline = entry.get('last_attempt_epoch', 0) + interval
-    return current >= deadline
+    return force or current >= deadline
 
 
 def follow_due(entry, current, enabled, paused=False):

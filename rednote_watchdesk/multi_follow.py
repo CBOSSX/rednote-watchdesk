@@ -6,7 +6,7 @@ from rednote_watchdesk.follow_state import selected_accounts
 from rednote_watchdesk.retry_policy import follow_due, retry_delay
 
 
-def run(state, config, *, data, enqueue, save, gate, site_paused, driver):
+def run(state, config, *, data, enqueue, save, gate, site_paused, driver, cancelled=lambda: False):
     attempted = 0
     paused = state.setdefault('follow_paused_accounts', {})
     for target in state.get('auto_follow_targets', []):
@@ -14,6 +14,8 @@ def run(state, config, *, data, enqueue, save, gate, site_paused, driver):
         if not entry.get('found'):
             continue
         for aid in selected_accounts(state, target):
+            if cancelled():
+                return
             job = entry['follows'][aid]
             if attempted >= 2:
                 return  # Remaining actors continue on the next scheduler tick.

@@ -1,0 +1,85 @@
+{
+  "date": "2026-11-05",
+  "timezone": "Asia/Shanghai",
+  "experiment": "Same launchd diagnostic script, account browser profile, URL and interpreter; only ProcessType differs.",
+  "background": [
+    {
+      "t": 170.02,
+      "kind": "attempt_error",
+      "attempt": 0,
+      "error": "Page.goto: Timeout 45000ms exceeded.\nCall log:\n  - navigating to \"https://www.xiaohongshu.com/explore\", waiting until \"domcontentloaded\"\n"
+    },
+    {
+      "t": 170.02,
+      "kind": "done"
+    }
+  ],
+  "interactive": [
+    {
+      "t": 2.57,
+      "kind": "navigation",
+      "attempt": 0,
+      "status": 200,
+      "elapsed": 1.82
+    },
+    {
+      "t": 4.09,
+      "kind": "body",
+      "chars": 1706,
+      "elapsed": 0.01
+    },
+    {
+      "t": 4.09,
+      "kind": "cdp_dom",
+      "elapsed": 0.0,
+      "value": {
+        "result": {
+          "type": "string",
+          "value": "{\"ready\":\"complete\",\"body\":true,\"count\":1,\"chars\":1709,\"visibility\":\"visible\"}"
+        }
+      }
+    },
+    {
+      "t": 4.09,
+      "kind": "locator_count",
+      "count": 1,
+      "elapsed": 0.0
+    },
+    {
+      "t": 4.44,
+      "kind": "done"
+    }
+  ],
+  "recent_manual_round": {
+    "duration_seconds": 110.2,
+    "result": "failed",
+    "failure_stage": "homepage_access",
+    "http_status": 200
+  },
+  "scope": "One isolated launchd comparison per mode; additional foreground probes succeeded. Platform availability can still vary.",
+  "fix": "Interactive for UI and browser monitor; Background retained for watchdog.",
+  "after_fix_readonly_verification": [
+    {
+      "status": "not_found",
+      "result": null,
+      "result_count": 15,
+      "checked_at": "2026-11-05T09:09:53+00:00"
+    },
+    {
+      "attempt": 1,
+      "code": 0,
+      "elapsed_seconds": 8.38
+    },
+    {
+      "status": "not_found",
+      "result": null,
+      "result_count": 15,
+      "checked_at": "2026-11-05T09:10:01+00:00"
+    },
+    {
+      "attempt": 2,
+      "code": 0,
+      "elapsed_seconds": 7.68
+    }
+  ]
+}

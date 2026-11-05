@@ -54,6 +54,17 @@ class MultiAccountTests(unittest.TestCase):
         self.assertTrue(self.state()['completed'])
         self.query.assert_called_once()
 
+    def test_pause_after_one_follow_does_not_start_next_actor(self):
+        from rednote_watchdesk import pause_control
+        def follow(*args, **kwargs):
+            pause_control.request_pause(self.data)
+            return {'status': 'followed'}
+        with patch.object(follow_jobs, 'follow_once', side_effect=follow) as driver, patch.object(watch, 'webhook'):
+            watch.run_check(self.config)
+        driver.assert_called_once()
+        self.assertTrue(self.state()['paused'])
+        self.assertEqual(self.state()['targets'][TARGET]['follows'][self.actors[1]]['status'], 'pending')
+
     def test_search_switches_serially_and_keeps_the_current_target_and_previous_match(self):
         self.config['search_account_ids'] = self.actors
         self.config['people'][0]['follow_account_ids'] = []
@@ -88,6 +99,8 @@ class MultiAccountTests(unittest.TestCase):
                                      (backup, 'example_other'), (backup, 'example_last')])
             self.assertEqual(self.state()['search']['active_account_id'], backup)
             self.assertEqual(self.state()['search']['errors'], {first: 'login_required'})
+            self.assertEqual(self.state()['search']['error_details'][first]['code'], 'login_required')
+            self.assertNotIn(backup, self.state()['search']['error_details'])
             self.assertEqual(self.state()['targets']['example_other']['consecutive_errors'], 0)
             self.assertEqual(watch.run_check(self.config), 0)
             self.assertEqual(calls[4:], [(backup, 'example_other'), (backup, 'example_last')])

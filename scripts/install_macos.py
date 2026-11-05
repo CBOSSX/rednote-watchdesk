@@ -26,7 +26,9 @@ def main():
         else:argv=[sys.executable,'-m','rednote_watchdesk.config_server','--no-scheduler'];interval=None
         payload={'Label':label,'ProgramArguments':argv,'WorkingDirectory':str(PROJECT),
                  'EnvironmentVariables':{'REDNOTE_WATCHDESK_HOME':str(RUNTIME)},
-                 'RunAtLoad':True,'ProcessType':'Background','LimitLoadToSessionType':'Aqua',
+                 # Browser workers inherit launchd resource limits. Background can
+                 # stall Chrome even while foreground diagnostics are healthy.
+                 'RunAtLoad':True,'ProcessType':'Background' if role=='watchdog' else 'Interactive','LimitLoadToSessionType':'Aqua',
                  'StandardOutPath':str(logs/(role+'-launchd.out.log')),
                  'StandardErrorPath':str(logs/(role+'-launchd.err.log'))}
         if interval:payload['StartInterval']=interval

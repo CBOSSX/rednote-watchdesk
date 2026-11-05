@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Dispatch due checks and record health without browser dependencies."""
 import datetime
+import argparse
 import fcntl
 import json
 import os
@@ -12,6 +13,7 @@ import sys
 from rednote_watchdesk.paths import RUNTIME, PROJECT, HEALTH as PRIVATE_HEALTH
 from rednote_watchdesk.watch_config import normalize, needs_reconcile
 from rednote_watchdesk.retry_policy import query_due, follow_due
+from rednote_watchdesk import pause_control
 
 ROOT = RUNTIME
 DATA = ROOT / "data"
@@ -46,20 +48,24 @@ def heartbeat(status, **extra):
     mirror("heartbeat.json", value)
 
 
-def main():
+def main(force=False, pause_token=None):
     os.umask(0o077)
     DATA.mkdir(exist_ok=True, mode=0o700)
+    if pause_token is None:
+        pause_token = pause_control.token(DATA)
     with (DATA / "tick.lock").open("w") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return
+            if force:
+                print('BUSY', flush=True)
+            return 0
         started = time.time()
         heartbeat("starting", started_at=started)
         try:
             config = json.loads((ROOT / "config.json").read_text())
             state_path = DATA / "state.json"
-            state = json.loads(state_path.read_text())
+            state = pause_control.apply(DATA, json.loads(state_path.read_text()))
             mirror("state.json", {k: state[k] for k in ("paused", "completed", "query_complete", "follow_pending", "configured_targets", "last_attempt_epoch", "last_status", "last_checked_at", "resumed_at") if k in state})
             plan = normalize(config)
             changed = needs_reconcile(config, state)
@@ -69,24 +75,30 @@ def main():
             follow_work = False
             if state.get("targets"):
                 entries = [state["targets"].get(t, {}) for t in names]
-                due_count = sum(query_due(e, now, interval) for e in entries)
+                due_count = sum(query_due(e, now, interval, force=force) for e in entries)
                 follow_work = any(follow_due(state['targets'].get(t, {}), now, state.get('auto_follow_enabled', config.get('auto_follow_enabled')), state.get('follow_paused'))
                                   for t in state.get('auto_follow_targets', config.get('auto_follow_targets', [])) if t in names)
                 if state.get('multi_account'):
                     from rednote_watchdesk.follow_state import multi_follow_due
                     follow_work = multi_follow_due(state, now)
             else:
-                due_count = max(1, len(names)) if query_due(state, now, interval) else 0
-            if not changed and not state.get("pending") and (state.get("paused") or state.get("completed") or (state.get("query_complete") and not follow_work) or not (due_count or follow_work)):
+                due_count = max(1, len(names)) if query_due(state, now, interval, force=force) else 0
+            if not force and not changed and not state.get("pending") and (state.get("paused") or state.get("completed") or (state.get("query_complete") and not follow_work) or not (due_count or follow_work)):
                 heartbeat("idle")
                 return
             timeout = 480 if any(p['auto_follow'] for p in plan['people']) else 240
             account_count = len(plan.get('search_account_ids', []))
-            if due_count and account_count > 1 and not state.get('paused'):
+            if due_count:
+                timeout += 115 * (due_count - 1)
+            if due_count and account_count > 1 and (force or not state.get('paused')):
                 # Each backup can require a browser startup, identity check and another search.
-                timeout += 220 * (account_count - 1) + 115 * (due_count - 1)
+                timeout += 220 * (account_count - 1)
             heartbeat("checking", started_at=started, timeout_seconds=timeout)
-            child = subprocess.Popen([sys.executable, "-m", "rednote_watchdesk.watch", "check"], cwd=PROJECT, start_new_session=True)
+            command = 'check-now' if force else 'check'
+            argv = [sys.executable, "-m", "rednote_watchdesk.watch", command]
+            if force:
+                argv += ['--pause-token', pause_token]
+            child = subprocess.Popen(argv, cwd=PROJECT, start_new_session=True)
             try:
                 code = child.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -97,20 +109,26 @@ def main():
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
                 heartbeat("fatal", reason="worker_timeout")
-                return
+                return 1 if force else 0
             if code == 0:
                 state = json.loads(state_path.read_text())
                 mirror("state.json", {k: state[k] for k in ("paused", "completed", "query_complete", "follow_pending", "configured_targets", "last_attempt_epoch", "last_status", "last_checked_at", "resumed_at") if k in state})
                 heartbeat("ok")
-                return
+                return 0
             state = json.loads(state_path.read_text())
             mirror("state.json", {k: state[k] for k in ("paused", "completed", "query_complete", "follow_pending", "configured_targets", "last_attempt_epoch", "last_status", "last_checked_at", "resumed_at") if k in state})
             checked = datetime.datetime.fromisoformat(state.get("last_checked_at", "1970-01-01T00:00:00+00:00")).timestamp()
             handled = code == 2 and checked >= started - 2 and state.get("last_status") in ("error", "partial_error", "paused")
             heartbeat("handled_error" if handled else "fatal", reason="worker_exit_" + str(code))
+            return code if force else 0
         except Exception as error:
             heartbeat("fatal", reason="scheduler_" + type(error).__name__)
+            return 1 if force else 0
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--now', action='store_true', help='Run one round, ignoring polling deadlines and keeping the paused state')
+    parser.add_argument('--pause-token')
+    args = parser.parse_args()
+    sys.exit(main(force=args.now, pause_token=args.pause_token) or 0)

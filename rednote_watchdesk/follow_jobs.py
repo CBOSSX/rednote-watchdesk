@@ -7,10 +7,11 @@ from rednote_watchdesk.retry_policy import follow_due, retry_delay
 LOG = logging.getLogger('xhs-watch')
 
 
-def run_follow_jobs(state, config, *, data, enqueue, save, gate, site_paused):
+def run_follow_jobs(state, config, *, data, enqueue, save, gate, site_paused, cancelled=lambda: False):
     if state.get('multi_account'):
         from rednote_watchdesk.multi_follow import run
-        return run(state, config, data=data, enqueue=enqueue, save=save, gate=gate, site_paused=site_paused, driver=follow_once)
+        return run(state, config, data=data, enqueue=enqueue, save=save, gate=gate, site_paused=site_paused,
+                   driver=follow_once, cancelled=cancelled)
     names = [t for t in state.get('auto_follow_targets', []) if follow_due(
         state['targets'][t], time.time(), state.get('auto_follow_enabled'), state.get('follow_paused'))]
     if not names:
@@ -31,6 +32,8 @@ def run_follow_jobs(state, config, *, data, enqueue, save, gate, site_paused):
                 'text': ('自动关注成功：' if kind == 'follow_success' else '自动关注未成功：') + target}
 
     for target in names:
+        if cancelled():
+            return
         entry = state['targets'][target]
         job = entry['follow']
         if state.get('follow_paused'):
