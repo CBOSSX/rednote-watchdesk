@@ -37,8 +37,8 @@ function switchTab(tab) {
     else node.removeAttribute('aria-current');
   });
   reveal($('#page-title').parentElement, 5);
-  $('#page-title').textContent = {people: '监控目标', accounts: '登录账号', settings: '轮询与通知'}[tab];
-  $('#page-subtitle').textContent = {people: '管理候选账号、查询状态与自动关注', accounts: '独立登录，分别保存', settings: '让雷达按你的节奏运行'}[tab];
+  $('#page-title').textContent = {people: '监测总览', accounts: '账号管理', settings: '监测设置'}[tab];
+  $('#page-subtitle').textContent = {people: '查看监测状态、查询进度与目标动态', accounts: '管理登录账号、搜索顺序与关注分工', settings: '调整查询节奏与飞书通知'}[tab];
 }
 function readEditors() {
   // Hidden cards remain in the draft and must be included when saving a filtered list.
@@ -69,9 +69,15 @@ function cardState(card) {
 }
 function updateStats() {
   const people = readEditors();
+  const states = $$('.person-card').map(card => cardState(card).state);
+  const matched = states.filter(state => state?.matched_target).length;
+  const attention = states.filter(state => state?.query_errors?.length ||
+    ['failed', 'blocked', 'retry'].includes(state?.follow_status)).length;
   $('#people-count').textContent = people.length;
-  $('#candidate-count').textContent = people.reduce((count, person) => count + person.candidates.length, 0);
-  $('#matched-count').textContent = $$('.person-card').filter(card => cardState(card).state?.matched_target).length;
+  $('#pending-count').textContent = people.length - matched;
+  $('#matched-count').textContent = matched;
+  $('#attention-count').textContent = attention;
+  $('#attention-count').classList.toggle('has-attention', attention > 0);
   for (const card of $$('.person-card')) {
     const count = [...card.querySelectorAll('.candidate-input')].filter(input => input.value.trim()).length;
     card.querySelector('.candidate-total').textContent = count + ' 个候选';
@@ -378,18 +384,20 @@ function renderStatus({initial = false, saved = false} = {}) {
     applyFilters();
   }
 }
+function applySnapshot(snapshot) {
+  const initial = !latest;
+  latest = snapshot;
+  if (initial) {
+    searchAccountIds = latest.config.search_account_ids;
+    version = latest.version; $('#interval').value = latest.config.interval_seconds / 60;
+    renderPeople(latest.config.people);
+    $('#mentions').value = latest.notifications.mention_users.map(user => user.name + ',' + user.user_id).join('\n');
+  }
+  renderStatus({initial});
+}
 async function load() {
   try {
-    const snapshot = await api('/api/state');
-    const initial = !latest;
-    latest = snapshot;
-    if (initial) {
-      searchAccountIds = latest.config.search_account_ids;
-      version = latest.version; $('#interval').value = latest.config.interval_seconds / 60;
-      renderPeople(latest.config.people);
-      $('#mentions').value = latest.notifications.mention_users.map(user => user.name + ',' + user.user_id).join('\n');
-    }
-    renderStatus({initial});
+    applySnapshot(await api('/api/state'));
   } catch (error) { toast(error.message, true); }
 }
 async function savePeople() {
@@ -505,4 +513,10 @@ $('#save-notifications').onclick = async () => {
 };
 // Browsers require their own synchronous prompt when leaving with unsaved edits.
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
+// The document carries the first snapshot, so refresh need not paint empty data
+// while a separate state request is still in flight. Subsequent polls stay fresh.
+try {
+  const initial = JSON.parse($('#initial-state')?.textContent || 'null');
+  if (initial?.config && initial?.state) applySnapshot(initial);
+} catch { /* Static previews can still load their state through the API. */ }
 load(); setInterval(() => load(), 2000); setInterval(renderQueryProgress, 1000);

@@ -91,7 +91,7 @@ def main():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel='chrome', headless=True)
         try:
-            context = browser.new_context(viewport={'width': 1360, 'height': 1200}, device_scale_factor=2,
+            context = browser.new_context(viewport={'width': 1360, 'height': 1280}, device_scale_factor=2,
                                           reduced_motion='reduce', service_workers='block')
             # Keep progress timers reproducible without changing browser scheduling.
             context.add_init_script('Date.now = () => ' + str(int(DEMO_TIME*1000)))
@@ -103,6 +103,10 @@ def main():
             expect(page.locator('.person-card')).to_have_count(3)
             expect(page.locator('#last-run')).to_have_text('18:00:00')
             expect(page.locator('#global-status')).to_have_text('监测已开启')
+            expect(page.locator('#page-title')).to_have_text('监测总览')
+            expect(page.locator('#pending-count')).to_have_text('1')
+            expect(page.locator('#matched-count')).to_have_text('2')
+            expect(page.locator('#attention-count')).to_have_text('0')
             expect(page.locator('#query-progress-title')).to_have_text('自动查询 · 读取搜索页面正文')
             expect(page.locator('#query-progress-elapsed')).to_have_text('已用 8 秒')
             expect(page.locator('.brand-icon')).to_have_attribute('src', '/favicon.svg')
@@ -126,7 +130,7 @@ def main():
             page.reload()
             expect(page.locator('#query-progress-title')).to_have_text('手动查询 · 本轮已完成')
             expect(page.locator('#query-progress-detail')).to_have_text('已检查 2 / 2 · 成功 2，失败 0，发现 0')
-            page.locator('#query-progress').screenshot(path=str(DOCS/'query-summary.png'))
+            page.locator('.overview-card').screenshot(path=str(DOCS/'query-summary.png'))
             progress.clear(); progress.update(running)
             page.reload()
             expect(page.locator('#query-progress-title')).to_have_text('自动查询 · 读取搜索页面正文')
@@ -143,6 +147,9 @@ def main():
             page.locator('#cancel-follow-dialog').click()
 
             page.locator('[data-tab="accounts"]').click()
+            expect(page.locator('#page-title')).to_have_text('账号管理')
+            expect(page.locator('#query-progress')).to_be_hidden()
+            expect(page.locator('#check-now')).to_be_hidden()
             expect(page.locator('.account-card')).to_have_count(2)
             expect(page.locator('.rename-account').first).to_be_visible()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

@@ -37,18 +37,31 @@ def exercise(page, root, reduced):
     expect(progress_panel).to_be_visible()
     expect(page.locator('#query-progress-title')).to_have_text('查询进度 · 等待首次查询')
     initial_progress_height = progress_panel.bounding_box()['height']
-    expect(stats.locator('#people-count')).to_be_hidden()
+    # The document snapshot renders immediately even while the first poll is held.
+    expect(stats.locator('#people-count')).to_be_visible()
+    expect(stats.locator('#people-count')).to_have_text('3')
+    expect(page.locator('.person-card')).to_have_count(3)
+    page.evaluate('window.bootCard = document.querySelector(".person-card")')
     stats_height = stats.bounding_box()['height']
     initial_requests[0].continue_()
     expect(page.locator('.person-card')).to_have_count(3)
     expect(page.locator('.person-card:visible')).to_have_count(2)
     expect(stats.locator('#people-count')).to_be_visible()
     expect(stats.locator('#people-count')).to_have_text('3')
+    expect(page.locator('#page-title')).to_have_text('监测总览')
+    expect(stats.locator('#pending-count')).to_have_text('2')
+    expect(stats.locator('#matched-count')).to_have_text('1')
+    expect(stats.locator('#attention-count')).to_have_text('0')
+    assert page.locator('.overview-card').locator('#query-progress').count() == 1
+    assert page.locator('.overview-card').locator('#check-now').count() == 1
     expect(page.locator('.brand-icon')).to_have_attribute('src', '/favicon.svg')
     assert page.locator('.brand-icon').evaluate('img => img.complete && img.naturalWidth > 0')
     assert page.locator('.brand-icon').get_attribute('src') == page.locator('link[rel="icon"]').get_attribute('href')
     assert stats.bounding_box()['height'] == stats_height
     assert progress_panel.bounding_box()['height'] == initial_progress_height
+    assert page.evaluate('window.bootCard === document.querySelector(".person-card")')
+    label_positions = page.locator('.nav-label').evaluate_all('nodes => nodes.map(node => node.getBoundingClientRect().left)')
+    assert len(set(label_positions)) == 1, label_positions
     assert page.evaluate('window.cardAnimations') == 0
     unfinished = page.locator('[data-filter="unfinished"]')
     expect(page.locator('.filter-button')).to_have_count(3)
@@ -65,8 +78,13 @@ def exercise(page, root, reduced):
       }
       document.querySelector('[data-tab="accounts"]').click();
     }''')
-    expect(page.locator('main > section:visible').filter(has_not=page.locator('#query-progress-title'))).to_have_count(1)
+    expect(page.locator('main > section:visible')).to_have_count(1)
     expect(page.locator('#accounts-tab')).to_be_visible()
+    expect(page.locator('#page-title')).to_have_text('账号管理')
+    expect(page.locator('#page-subtitle')).to_have_text('管理登录账号、搜索顺序与关注分工')
+    expect(progress_panel).to_be_hidden()
+    expect(page.locator('#check-now')).to_be_hidden()
+    expect(page.locator('#global-status')).to_be_visible()
     if reduced:
         assert page.evaluate('document.getAnimations().length') == 0
     else:
@@ -139,6 +157,8 @@ def exercise(page, root, reduced):
     expect(search_order.locator('small')).to_have_text(['登录已失效', '当前使用', '待登录'], timeout=7000)
     page.locator('[data-tab="people"]').click()
     expect(page.locator('.name').first).to_have_value('编辑中的目标')
+    expect(progress_panel).to_be_visible()
+    expect(page.locator('#page-title')).to_have_text('监测总览')
 
     page.locator('[data-filter="completed"]').click()
     expect(page.locator('.person-card:visible')).to_have_count(1)
@@ -328,6 +348,12 @@ def exercise(page, root, reduced):
     for tab in ['people', 'accounts', 'settings']:
         page.locator(f'[data-tab="{tab}"]').click()
         expect(page.locator(f'#{tab}-tab')).to_be_visible()
+        expect(page.locator('#page-title')).to_have_text({'people': '监测总览', 'accounts': '账号管理', 'settings': '监测设置'}[tab])
+        if tab == 'people':
+            expect(page.locator('.overview-card')).to_be_visible()
+        else:
+            expect(page.locator('.overview-card')).to_be_hidden()
+            expect(page.locator('#check-now')).to_be_hidden()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), tab
     page.locator('[data-tab="accounts"]').click()
     search_order.get_by_role('button', name='移除 备用账号').click()
@@ -376,6 +402,7 @@ def exercise(page, root, reduced):
     expect(error_card).to_contain_text('读取首页正文超时')
     expect(error_card).to_contain_text('连续失败 3 次')
     expect(error_card).to_contain_text('下次重试')
+    expect(page.locator('#attention-count')).to_have_text('1')
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     page.locator('[data-tab="accounts"]').click()
     expect(search_order).to_contain_text('读取首页正文超时')
@@ -389,6 +416,7 @@ def exercise(page, root, reduced):
     snapshot['state']['search_account_error_details'] = {}
     page.reload()
     expect(page.locator('.query-error')).to_have_count(0)
+    expect(page.locator('#attention-count')).to_have_text('0')
     # One manual request runs while paused and never toggles automatic polling.
     snapshot['jobs'] = []
     snapshot['state']['paused'] = False

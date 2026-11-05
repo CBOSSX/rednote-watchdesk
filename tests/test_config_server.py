@@ -23,6 +23,14 @@ class ServerTests(unittest.TestCase):
   r=c.getresponse();data=r.read().decode();c.close();return r.status,data
  def test_state_never_returns_notification_secrets(self):
   code,data=self.request('/api/state');self.assertEqual(code,200);self.assertNotIn('PRIVATE_TEST_VALUE',data);self.assertNotIn('PRIVATE_SIGNING_VALUE',data)
+ def test_initial_document_snapshot_is_safe_and_preserves_target_text(self):
+  name='</script><script>window.injected=true</script>'
+  server.write(self.root/'config.json',{'people':[{'id':'person','name':name,'candidates':['example_person']}],'search_account_ids':[]})
+  code,html=self.request('/');self.assertEqual(code,200)
+  encoded=html.split('<script id="initial-state" type="application/json">',1)[1].split('</script>',1)[0]
+  self.assertEqual(json.loads(encoded)['config']['people'][0]['name'],name)
+  self.assertNotIn(name,html)
+  self.assertNotIn('PRIVATE_TEST_VALUE',html);self.assertNotIn('PRIVATE_SIGNING_VALUE',html)
  def test_page_and_module_assets_are_served_after_directory_move(self):
   code,html=self.request('/');self.assertEqual(code,200)
   self.assertIn('type="module" src="/js/app.js"',html)

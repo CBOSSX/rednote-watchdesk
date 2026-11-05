@@ -266,7 +266,15 @@ class Handler(BaseHTTPRequestHandler):
             assets={'/':('index.html','text/html; charset=utf-8'),'/favicon.svg':('favicon.svg','image/svg+xml'),'/js/app.js':('js/app.js','application/javascript; charset=utf-8'),'/js/motion.js':('js/motion.js','application/javascript; charset=utf-8'),'/js/accounts.js':('js/accounts.js','application/javascript; charset=utf-8'),'/css/style.css':('css/style.css','text/css; charset=utf-8'),'/css/motion.css':('css/motion.css','text/css; charset=utf-8')}
             if self.path not in assets:return self.respond(404,{'error':'未找到'})
             name,mime=assets[self.path];text=(PROJECT/'web'/name).read_text()
-            if name=='index.html':text=text.replace('__CSRF_TOKEN__',TOKEN)
+            if name=='index.html':
+                try:
+                    initial = payload()
+                except Exception:
+                    initial = None
+                # JSON lives in a non-executable script element. Escape HTML
+                # delimiters so a target name cannot close it and inject markup.
+                initial_json = json.dumps(initial,ensure_ascii=False).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026')
+                text=text.replace('__CSRF_TOKEN__',TOKEN).replace('__INITIAL_STATE__',initial_json)
             self.respond(200,text,mime)
         except Exception:
             self.respond(500,{'error':'读取配置失败，请检查本机日志'})
