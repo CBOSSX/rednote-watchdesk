@@ -4,6 +4,7 @@ No backend imports, existing browser profiles, local services or external reques
 Run: .venv/bin/python -m scripts.capture_screenshots
 """
 import datetime
+import math
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -91,9 +92,16 @@ def main():
             expect(page.locator('.person-card')).to_have_count(3)
             expect(page.locator('#last-run')).to_have_text('18:00:00')
             expect(page.locator('#global-status')).to_have_text('监测已开启')
+            page.locator('[data-filter="all"]').click()
+            expect(page.locator('.person-card:visible')).to_have_count(3)
+            main_panel = page.locator('main')
+            content_height = math.ceil(main_panel.bounding_box()['height'])
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            assert content_height <= page.viewport_size['height']
             page.mouse.move(0, 0)
-            page.screenshot(path=str(DOCS/'screenshot.png'), full_page=True)
+            page.screenshot(path=str(DOCS/'screenshot.png'), clip={
+                'x': 0, 'y': 0, 'width': page.viewport_size['width'], 'height': content_height,
+            })
 
             heights = page.locator('.person-card').evaluate_all('nodes => nodes.map(n => n.getBoundingClientRect().height)')
             page.locator('.follow-picker').first.click()
@@ -110,7 +118,7 @@ def main():
             expect(page.locator('.rename-account').first).to_be_visible()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             page.mouse.move(0, 0)
-            page.screenshot(path=str(DOCS/'accounts.png'), full_page=True)
+            main_panel.screenshot(path=str(DOCS/'accounts.png'))
             assert not errors, errors
         finally:
             browser.close()
