@@ -18,8 +18,32 @@ def exercise(page, root, reduced):
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.on('response', lambda response: errors.append(response.url) if response.status >= 400 and not response.url.endswith('/favicon.ico') else None)
-    page.goto(root)
+    page.add_init_script('''{
+        const animate = Element.prototype.animate;
+        window.cardAnimations = 0;
+        Element.prototype.animate = function (...args) {
+            if (this.matches('.person-card')) window.cardAnimations++;
+            return animate.apply(this, args);
+        };
+    }''')
+    initial_requests = []
+    page.route('**/api/state', lambda route: initial_requests.append(route), times=1)
+    with page.expect_request('**/api/state'):
+        page.goto(root)
+    stats = page.locator('.stats')
+    expect(stats.locator('#people-count')).to_be_hidden()
+    stats_height = stats.bounding_box()['height']
+    initial_requests[0].continue_()
     expect(page.locator('.person-card')).to_have_count(3)
+    expect(page.locator('.person-card:visible')).to_have_count(2)
+    expect(stats.locator('#people-count')).to_be_visible()
+    expect(stats.locator('#people-count')).to_have_text('3')
+    assert stats.bounding_box()['height'] == stats_height
+    assert page.evaluate('window.cardAnimations') == 0
+    unfinished = page.locator('[data-filter="unfinished"]')
+    expect(page.locator('.filter-button')).to_have_count(3)
+    expect(unfinished).to_have_attribute('aria-pressed', 'true')
+    expect(unfinished.locator('.filter-count')).to_have_text('2')
     page.locator('.name').first.fill('编辑中的目标')
     page.evaluate('window.firstCard = document.querySelector(".person-card")')
 
@@ -69,7 +93,7 @@ def exercise(page, root, reduced):
 
     page.locator('[data-filter="completed"]').click()
     expect(page.locator('.person-card:visible')).to_have_count(1)
-    page.locator('[data-filter="waiting"]').click()
+    unfinished.click()
     expect(page.locator('.person-card:visible')).to_have_count(2)
     page.locator('#target-search').fill('no-such-target')
     expect(page.locator('#filter-empty')).to_be_visible()
@@ -77,8 +101,10 @@ def exercise(page, root, reduced):
     expect(page.locator('.person-card:visible')).to_have_count(3)
 
     # New cards must not replace existing editors; candidates retain keyboard flow.
+    unfinished.click()
     page.locator('#add-person').click()
     expect(page.locator('.person-card')).to_have_count(4)
+    expect(page.locator('.person-card:visible')).to_have_count(3)
     assert page.evaluate('window.firstCard === document.querySelector(".person-card")')
     card = page.locator('.person-card').last
     expect(card.locator('.name')).to_be_focused()
@@ -117,6 +143,8 @@ def exercise(page, root, reduced):
     page.locator('[data-filter="completed"]').click()
     page.locator('#save-people').click()
     expect(page.locator('#save-hint')).to_have_text('已保存')
+    expect(page.locator('#toast.show')).to_have_text('配置已保存，将在下一轮调度时生效')
+    expect(page.locator('#banner')).to_have_count(0)
     saved = page.request.get(root + '/api/state').json()['config']['people']
     assert len(saved) == 4 and saved[0]['name'] == '编辑中的目标'
     assert saved[-1]['candidates'] == ['example_delta'] and saved[-1]['auto_follow']
@@ -136,6 +164,7 @@ def exercise(page, root, reduced):
     expect(page.locator('#settings-jobs')).to_contain_text('操作完成', timeout=7000)
     expect(page.locator('#settings-jobs')).to_be_empty(timeout=10000)
     expect(page.locator('#accounts-jobs')).to_be_empty()
+    expect(page.locator('#toast')).to_be_hidden()
     expect(page.locator('#webhook-editor')).to_be_hidden()
     page.locator('#replace-webhook').click()
     expect(page.locator('#webhook')).to_be_focused()

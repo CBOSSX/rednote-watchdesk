@@ -3,9 +3,10 @@ import {accountName, editAccountLabel, renderAccounts, renderFollowerOptions} fr
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const csrf = $('meta[name="csrf-token"]').content;
-let latest = null, dirty = false, version = '', toastTimer, selectedFilter = 'all';
+let latest = null, dirty = false, version = '', toastTimer, selectedFilter = 'unfinished';
 let currentTab = 'people', searchAccountId = null;
 let jobsInitialized = false;
+let activeNotices = new Set();
 const seenJobResults = new Set(), recentJobResults = new Map();
 const credentialEditing = {webhook: false, signing: false};
 const time = value => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '尚未运行';
@@ -81,13 +82,15 @@ function applyFilters() {
 function updateFilters() {
   const query = $('#target-search').value.trim().toLocaleLowerCase();
   const cards = $$('.person-card');
-  const counts = {all: cards.length, waiting: 0, matched: 0, completed: 0, attention: 0, paused: 0};
+  const counts = {all: cards.length, unfinished: 0, completed: 0};
   let visible = 0;
   for (const card of cards) {
     const status = cardState(card);
-    counts[status.key]++;
+    const group = status.key === 'completed' ? 'completed' : 'unfinished';
+    counts[group]++;
     const terms = [card.querySelector('.name').value, ...[...card.querySelectorAll('.candidate-input')].map(input => input.value), status.state?.result?.name || ''].join(' ').toLocaleLowerCase();
-    const matches = (!query || terms.includes(query)) && (selectedFilter === 'all' || status.key === selectedFilter);
+    const matchesStatus = selectedFilter === 'all' || selectedFilter === group;
+    const matches = (!query || terms.includes(query)) && matchesStatus;
     const editing = card.contains(document.activeElement);
     card.classList.toggle('hidden', !matches && !editing);
     if (matches || editing) visible++;
@@ -160,7 +163,6 @@ function addCandidate(card, value = '', focus = false, after = null) {
 function renderPeople(people) {
   const list = $('#people-list'); list.replaceChildren();
   for (const person of people) list.append(createPerson(person));
-  updateStats(); renderStatuses();
 }
 function createPerson(person) {
   const card = $('#person-template').content.firstElementChild.cloneNode(true);
@@ -214,7 +216,6 @@ function renderStatuses() {
     }
     info.classList.toggle('hidden', !info.childNodes.length);
   }
-  applyFilters();
 }
 function renderNotificationFields() {
   const {configured, signing_configured: signed, mention_users: users} = latest.notifications;
@@ -247,19 +248,23 @@ async function clearNotificationFields(fields) {
   } catch (error) { toast(error.message, true); }
 }
 
-function renderStatus() {
+function renderStatus({initial = false, saved = false} = {}) {
   renderNotificationFields();
   const state = latest.state, badge = $('#global-status'); badge.className = 'pill';
   badge.textContent = latest.config.people.length === 0 ? '等待配置' : latest.pending_apply ? '配置待应用' : state.paused ? '监测已暂停' : state.completed ? '全部已完成' : '监测已开启';
   badge.classList.toggle('green', !state.paused && !latest.pending_apply);
   $('#pause').classList.toggle('hidden', state.paused); $('#resume').classList.toggle('hidden', !state.paused);
   $('#last-run').textContent = state.heartbeat_at ? new Date(state.heartbeat_at * 1000).toLocaleTimeString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '尚未运行';
-  const messages = [];
-  if (latest.pending_apply) messages.push('配置已保存，后台将在当前轮次结束后应用');
-  if (state.worker_fault) messages.push('后台运行异常，请检查本机网络和日志');
-  if (state.follow_paused) messages.push('部分账号的自动关注已暂停，请前往“登录账号”处理后恢复');
-  if (state.pending_notifications) messages.push('有通知等待发送；请检查飞书配置和网络');
-  $('#banner').textContent = messages.join(' '); setVisible($('#banner'), messages.length > 0);
+  const pendingApply = '配置已保存，将在下一轮调度时生效';
+  const notices = new Set();
+  if (latest.pending_apply) notices.add(pendingApply);
+  if (state.worker_fault) notices.add('后台运行异常，请检查本机网络和日志');
+  if (state.follow_paused) notices.add('部分账号的自动关注已暂停，请前往“登录账号”处理后恢复');
+  if (state.pending_notifications) notices.add('有通知等待发送，请检查飞书配置和网络');
+  const messages = [...notices].filter(message => !activeNotices.has(message) || (saved && message === pendingApply));
+  activeNotices = notices;
+  if (saved && !latest.pending_apply) messages.unshift('配置已保存');
+  if (messages.length) toast(messages.join('。'));
   const running = latest.jobs.some(job => job.status === 'running');
   renderAccounts(latest.accounts, searchAccountId, running, {login: loginAccount, resume: aid => control('follow-resume', aid), rename: account => editAccountLabel(account, renameAccount)});
   for (const card of $$('.person-card')) {
@@ -268,17 +273,25 @@ function renderStatus() {
   }
   renderJobs();
   renderStatuses(); updateStats();
+  if (initial) {
+    updateFilters();
+    $('.stats').removeAttribute('aria-busy');
+  } else {
+    applyFilters();
+  }
 }
-async function load(initial = false) {
+async function load() {
   try {
-    latest = await api('/api/state');
+    const snapshot = await api('/api/state');
+    const initial = !latest;
+    latest = snapshot;
     if (initial) {
       searchAccountId = latest.config.search_account_id;
       version = latest.version; $('#interval').value = latest.config.interval_seconds / 60;
       renderPeople(latest.config.people);
       $('#mentions').value = latest.notifications.mention_users.map(user => user.name + ',' + user.user_id).join('\n');
     }
-    renderStatus();
+    renderStatus({initial});
   } catch (error) { toast(error.message, true); }
 }
 async function savePeople() {
@@ -286,16 +299,17 @@ async function savePeople() {
     const config = {interval_seconds: Number($('#interval').value) * 60, search_account_id: searchAccountId, people: readEditors()};
     await api('/api/config', {version, config}); dirty = false;
     const result = await api('/api/state'); version = result.version; latest = result;
-    $('#save-hint').textContent = '已保存'; toast('配置已保存'); renderStatus();
+    $('#save-hint').textContent = '已保存'; renderStatus({saved: true});
   } catch (error) { toast(error.message, true); }
 }
 function addPerson() {
   const card = createPerson({id: 'p_' + crypto.randomUUID().replaceAll('-', '').slice(0, 16), name: '', candidates: [], auto_follow: false});
-  $('#target-search').value = ''; selectedFilter = 'all';
+  $('#target-search').value = '';
+  if (selectedFilter !== 'all') selectedFilter = 'unfinished';
   layoutChange($('#people-list'), () => {
     $('#people-list').append(card);
     dirty = true; $('#save-hint').textContent = '有未保存的修改';
-    updateStats(); renderStatuses();
+    updateStats(); renderStatuses(); updateFilters();
   });
   card.querySelector('.name').focus({preventScroll: true});
   scrollToNode(card);
@@ -389,4 +403,4 @@ $('#save-notifications').onclick = async () => {
   } catch (error) { toast(error.message, true); }
 };
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
-load(true); setInterval(() => load(), 5000);
+load(); setInterval(() => load(), 5000);
