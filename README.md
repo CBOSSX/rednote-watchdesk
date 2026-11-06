@@ -60,6 +60,23 @@ cd rednote-watchdesk
 .venv/bin/python -m scripts.install_macos --uninstall
 ```
 
+## 手机通过 Wi-Fi 访问
+
+控制台默认只供电脑本机访问。在可信的 Wi-Fi 上，可以额外开启一个需要访问码的局域网入口。将下面的 `192.168.1.20/24` 换成电脑的 Wi-Fi IPv4 地址和实际子网前缀（子网掩码为 `255.255.255.0` 时用 `/24`）。
+
+```sh
+./run.sh --enable-lan 192.168.1.20/24
+./run.sh --lan-code
+```
+
+如果控制台由 macOS 后台服务运行，执行 `launchctl kickstart -k "gui/$(id -u)/app.rednote-watchdesk.ui"` 使设置生效。手动运行时，退出原来的进程，再运行 `./run.sh`。
+
+手机连上同一个 Wi-Fi 后，用浏览器打开 `http://192.168.1.20:8767`（替换为实际地址）。浏览器弹出登录框时，用户名填 `watchdesk`，密码填刚才显示的访问码。这个入口使用 HTTP，请只在可信网络上开启。如果 Wi-Fi 隔离了设备，手机可能无法连接。账号扫码时，二维码仍显示在电脑上的 Chrome 中。
+
+同一个 Wi-Fi 也可能把手机和电脑分配到不同子网。如果页面提示来源 IP 未放行，核对页面上的 `client_ip` 与手机 Wi-Fi 详情里的 IPv4 地址，然后运行 `./run.sh --allow-lan-client 手机IPv4地址` 并重启控制台。这条命令每次只指定一台可跨子网连接的设备，该设备仍需输入访问码。
+
+电脑的 Wi-Fi 地址变更后，重新运行 `--enable-lan` 会更新地址并生成新访问码。要关闭入口，运行 `./run.sh --disable-lan` 后重启控制台。
+
 ## 本地数据
 
 配置、运行记录和账号登录信息保存在仓库外。请勿分享或提交这些目录。

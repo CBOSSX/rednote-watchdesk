@@ -1,4 +1,7 @@
+import argparse
+import base64
 import http.client
+import ipaddress
 import json
 from pathlib import Path
 import tempfile
@@ -118,6 +121,46 @@ class ServerTests(unittest.TestCase):
  def test_cross_origin_or_missing_token_cannot_mutate(self):
   for headers in [{'Origin':'https://evil.example'},{'X-CSRF-Token':''},{'Host':'evil.example'}]:
    self.assertEqual(self.request('/api/config',{},**headers)[0],403)
+ def test_lan_requires_a_private_interface_and_prefix(self):
+  self.assertEqual(str(server.lan_interface('10.12.3.4/22').network),'10.12.0.0/22')
+  for invalid in ['10.12.3.4','10.12.3.4/7','192.168.1.0/24','127.0.0.1/8','8.8.8.8/24','::1/128']:
+   with self.subTest(invalid=invalid),self.assertRaises(argparse.ArgumentTypeError):
+    server.lan_interface(invalid)
+ def test_lan_protects_page_and_api_and_preserves_request_checks(self):
+  auth='Basic '+base64.b64encode(b'watchdesk:test-only-access-code').decode()
+  self.http.RequestHandlerClass=server.LanHandler
+  self.http.lan_network=ipaddress.IPv4Network('127.0.0.0/8')
+  self.http.lan_client=None
+  self.http.lan_credential=auth.removeprefix('Basic ').encode()
+  with patch.object(server,'payload',return_value={}) as payload:
+   for path in ['/', '/api/state']:
+    self.assertEqual(self.request(path)[0],401)
+   self.assertEqual(self.request('/api/state',Authorization='Basic invalid')[0],401)
+   self.assertEqual(self.request('/api/state',Authorization=auth,Host='evil.example')[0],403)
+   payload.assert_not_called()
+   self.assertEqual(self.request('/',Authorization=auth)[0],200)
+   self.assertEqual(self.request('/api/state',Authorization=auth)[0],200)
+  with patch.object(server,'save_config') as save:
+   self.assertEqual(self.request('/api/config',{})[0],401)
+   self.assertEqual(self.request('/api/config',{},Authorization=auth,Origin='https://evil.example')[0],403)
+   self.assertEqual(self.request('/api/config',{},Authorization=auth,**{'X-CSRF-Token':''})[0],403)
+   save.assert_not_called()
+   self.assertEqual(self.request('/api/config',{},Authorization=auth)[0],200)
+   save.assert_called_once_with({})
+  self.http.lan_network=ipaddress.IPv4Network('192.168.1.0/24')
+  status,body=self.request('/api/state',Authorization=auth)
+  self.assertEqual(status,403)
+  self.assertEqual(json.loads(body)['client_ip'],'127.0.0.1')
+  self.http.lan_client=ipaddress.IPv4Address('127.0.0.2')
+  self.assertEqual(self.request('/api/state',Authorization=auth)[0],403)
+  self.http.lan_client=ipaddress.IPv4Address('127.0.0.1')
+  self.assertEqual(self.request('/api/state')[0],401)
+  self.assertEqual(self.request('/api/state',Authorization=auth)[0],200)
+ def test_lan_client_is_a_single_private_ipv4_address(self):
+  self.assertEqual(str(server.lan_client('10.16.7.5')),'10.16.7.5')
+  for invalid in ['10.16.7.5/24','8.8.8.8','127.0.0.1','::1']:
+   with self.subTest(invalid=invalid),self.assertRaises(argparse.ArgumentTypeError):
+    server.lan_client(invalid)
  def test_save_and_conflict_without_losing_stored_configuration(self):
   cfg={'interval_seconds':1200,'people':[{'id':'alice','name':'Alice','candidates':['example_alice','example_other'],'auto_follow':False}]}
   body={'config':cfg,'version':signature(server.read(self.root/'config.json'))}

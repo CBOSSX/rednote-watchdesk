@@ -1,8 +1,10 @@
-"""Loopback-only configuration UI; private state is never served as static files."""
+"""Local configuration UI with optional, authenticated LAN access."""
 import argparse
+import base64
 from contextlib import contextmanager
 import fcntl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -24,6 +26,9 @@ WAKE = threading.Event()
 JOBS = {}
 JOB_LOCK = threading.Lock()
 SCHEDULER = False
+LAN_PRIVATE_NETWORKS = tuple(ipaddress.IPv4Network(block) for block in (
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+))
 
 
 def read(path, default=None):
@@ -246,9 +251,13 @@ def start_job(command, *, fresh=False, title='操作', account_id=None, scope='p
 class Handler(BaseHTTPRequestHandler):
     server_version='RednoteWatchdesk'
     def log_message(self,*args):pass
-    def valid_host(self):
-        return self.headers.get('Host') in ('127.0.0.1:'+str(self.server.server_port),'localhost:'+str(self.server.server_port))
-    def respond(self,code,value,mime='application/json; charset=utf-8'):
+    def authorize(self):
+        port = self.server.server_port
+        if self.headers.get('Host') in (f'127.0.0.1:{port}', f'localhost:{port}'):
+            return True
+        self.respond(403, {'error': '仅支持本机访问'})
+        return False
+    def respond(self,code,value,mime='application/json; charset=utf-8',*,challenge=None):
         data = value.encode() if isinstance(value,str) else json.dumps(value,ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header('Content-Type',mime)
@@ -258,9 +267,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Referrer-Policy','no-referrer')
         self.send_header('X-Frame-Options','DENY')
         self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+        if challenge:
+            self.send_header('WWW-Authenticate', challenge)
         self.end_headers();self.wfile.write(data)
     def do_GET(self):
-        if not self.valid_host():return self.respond(403,{'error':'仅支持本机访问'})
+        if not self.authorize():
+            return
         try:
             if self.path=='/api/state':return self.respond(200,payload())
             assets={'/':('index.html','text/html; charset=utf-8'),'/favicon.svg':('favicon.svg','image/svg+xml'),'/js/app.js':('js/app.js','application/javascript; charset=utf-8'),'/js/motion.js':('js/motion.js','application/javascript; charset=utf-8'),'/js/accounts.js':('js/accounts.js','application/javascript; charset=utf-8'),'/css/style.css':('css/style.css','text/css; charset=utf-8'),'/css/motion.css':('css/motion.css','text/css; charset=utf-8')}
@@ -279,9 +291,11 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self.respond(500,{'error':'读取配置失败，请检查本机日志'})
     def do_POST(self):
+        if not self.authorize():
+            return
         origin=self.headers.get('Origin')
-        origins={'http://127.0.0.1:'+str(self.server.server_port),'http://localhost:'+str(self.server.server_port)}
-        if not self.valid_host() or origin not in origins or not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),TOKEN):
+        csrf = self.headers.get('X-CSRF-Token', '').encode('latin-1')
+        if origin != f"http://{self.headers['Host']}" or not secrets.compare_digest(csrf, TOKEN.encode()):
             return self.respond(403,{'error':'请求来源或页面会话无效，请刷新页面'})
         try:
             length=int(self.headers.get('Content-Length','0'))
@@ -325,6 +339,69 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:self.respond(500,{'error':'操作失败，请检查本机日志'})
 
 
+class LanHandler(Handler):
+    timeout = 10
+
+    def authorize(self):
+        host = f'{self.server.server_address[0]}:{self.server.server_port}'
+        if self.headers.get('Host') != host:
+            self.respond(403, {'error': '请使用 Mac 的 Wi-Fi IP 和端口访问控制台'})
+            return False
+        client = ipaddress.IPv4Address(self.client_address[0])
+        if client not in self.server.lan_network and client != self.server.lan_client:
+            self.respond(403, {'error': '来源 IP 不在 Mac 的子网内，也未单独放行', 'client_ip': str(client)})
+            return False
+        scheme, _, credential = self.headers.get('Authorization', '').partition(' ')
+        if scheme.lower() == 'basic' and secrets.compare_digest(credential.encode('latin-1'), self.server.lan_credential):
+            return True
+        self.respond(401, {'error': '请输入局域网访问码'}, challenge='Basic realm="Rednote Watchdesk"')
+        return False
+
+
+def lan_interface(value):
+    try:
+        interface = ipaddress.IPv4Interface(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('请输入 Mac 的局域网 IPv4 地址和前缀，例如 192.168.1.20/24') from error
+    if ('/' not in value
+            or not any(interface.network.subnet_of(network) for network in LAN_PRIVATE_NETWORKS)
+            or interface.ip in (interface.network.network_address, interface.network.broadcast_address)):
+        raise argparse.ArgumentTypeError('请输入私有局域网中的设备地址和子网前缀')
+    return interface
+
+
+def lan_client(value):
+    try:
+        client = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError as error:
+        raise argparse.ArgumentTypeError('请输入设备的 Wi-Fi IPv4 地址') from error
+    if not any(client in network for network in LAN_PRIVATE_NETWORKS):
+        raise argparse.ArgumentTypeError('只能单独放行私有 IPv4 地址')
+    return client
+
+
+def start_lan(port):
+    try:
+        settings = read(RUNTIME/'lan-access.json')
+        if not settings:
+            return None
+        interface = lan_interface(settings['interface'])
+        client = lan_client(settings['allowed_client']) if 'allowed_client' in settings else None
+        code = settings['access_code']
+        if not isinstance(code, str) or len(code) < 24 or not code.isascii():
+            raise ValueError('invalid LAN access code')
+        server = ThreadingHTTPServer((str(interface.ip), port), LanHandler)
+    except (OSError, ValueError, TypeError, KeyError, argparse.ArgumentTypeError):
+        print('局域网入口未启动，请检查 Mac 当前的 Wi-Fi 地址与局域网设置。', file=sys.stderr, flush=True)
+        return None
+    server.lan_network = interface.network
+    server.lan_client = client
+    server.lan_credential = base64.b64encode(f'watchdesk:{code}'.encode())
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f'Rednote Watchdesk LAN: http://{interface.ip}:{server.server_port}', flush=True)
+    return server
+
+
 def scheduler():
     while True:
         try:
@@ -340,12 +417,47 @@ def main():
     parser=argparse.ArgumentParser(description='Rednote Watchdesk local configuration page')
     parser.add_argument('--port',type=int,default=8767)
     parser.add_argument('--no-scheduler',action='store_true')
+    lan = parser.add_mutually_exclusive_group()
+    lan.add_argument('--enable-lan', type=lan_interface, metavar='IP/PREFIX', help='设置局域网地址并生成新访问码')
+    lan.add_argument('--disable-lan', action='store_true', help='删除局域网访问配置')
+    lan.add_argument('--lan-code', action='store_true', help='显示局域网访问码')
+    lan.add_argument('--allow-lan-client', type=lan_client, metavar='IP', help='指定一个可跨子网访问的设备')
     args=parser.parse_args()
-    os.umask(0o077);ensure_home()
+    os.umask(0o077)
+    lan_path = RUNTIME/'lan-access.json'
+    if args.enable_lan:
+        write(lan_path, {'interface': str(args.enable_lan), 'access_code': secrets.token_urlsafe(24)})
+        print('局域网访问已配置。重启控制台生效，使用 --lan-code 查看访问码。')
+        return
+    if args.disable_lan:
+        lan_path.unlink(missing_ok=True)
+        print('局域网访问配置已删除。重启控制台生效。')
+        return
+    if args.lan_code:
+        code = read(lan_path).get('access_code')
+        if not code:
+            parser.error('尚未设置局域网访问')
+        print(code)
+        return
+    if args.allow_lan_client:
+        settings = read(lan_path)
+        if not settings:
+            parser.error('请先开启局域网访问')
+        settings['allowed_client'] = str(args.allow_lan_client)
+        write(lan_path, settings)
+        print('已设置单独放行的设备。重启控制台生效，设备仍需输入访问码。')
+        return
+    ensure_home()
     SCHEDULER=not args.no_scheduler
     if SCHEDULER:threading.Thread(target=scheduler,daemon=True).start()
-    server=ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
-    print('Rednote Watchdesk: http://127.0.0.1:'+str(server.server_port),flush=True)
-    server.serve_forever()
+    with ThreadingHTTPServer(('127.0.0.1',args.port),Handler) as server:
+        print('Rednote Watchdesk: http://127.0.0.1:'+str(server.server_port),flush=True)
+        lan_server = start_lan(server.server_port)
+        try:
+            server.serve_forever()
+        finally:
+            if lan_server:
+                lan_server.shutdown()
+                lan_server.server_close()
 
 if __name__=='__main__':main()
