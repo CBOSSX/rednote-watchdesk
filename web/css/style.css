@@ -18,6 +18,7 @@ aside { position: fixed; inset: 0 auto 0 0; width: 242px; padding: 34px 22px; ba
 nav { margin-top: 50px; display: grid; gap: 10px; }
 .nav { display: flex; align-items: center; gap: 12px; border: 0; background: transparent; border-radius: 10px; padding: 15px; text-align: left; color: #8b8e99; }
 .nav-icon { display: grid; place-items: center; flex: 0 0 24px; width: 24px; font-size: 20px; line-height: 1; }
+.nav-icon svg { width: .875em; height: 1em; }
 .nav-label { font-size: 14px; }
 .nav.active { color: var(--pink); background: #fff0f4; font-weight: 650; }
 main { margin-left: 242px; padding: 40px clamp(24px, 4.4vw, 76px); max-width: 1600px; }
